@@ -23,7 +23,7 @@ git clone git@github.com:manqingchen/skills.git
 
 ## 维护
 
-本仓库克隆在 ZCode workspace 下，`~/.zcode/skills/`、`~/.claude/skills/`、`~/.agents/skills/` 里的技能均为指向本仓库的符号链接，直接编辑即生效（`sync.sh` 已不再需要，仅留档）。修改后：
+本仓库是技能的唯一工作副本（`~/Documents/workspace/skills`），`~/.zcode/skills/`、`~/.claude/skills/`、`~/.agents/skills/` 里的技能均为指向本仓库的符号链接，直接编辑即生效（`sync.sh` 已不再需要，仅留档）。修改后：
 
 ```bash
 git add -A && git commit -m "..." && git push
