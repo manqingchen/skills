@@ -21,6 +21,7 @@ git clone git@github.com:manqingchen/skills.git
 | [typesafe-ai](./typesafe-ai/) | TypeSafe：把 AI 判断封装成可编程原语（第三方技能，MIT License，见目录内 LICENSE） |
 | [ship](./ship/) | 一键发布：智能分批提交并推送当前分支 → 合并到 develop（自动定位或创建 worktree）→ 推送 develop |
 | [gz-global-api](./gz-global-api/) | 查询海外站 Java 接口的 OpenAPI 契约：网关 `/os/{service}/...` URI → 拉取测试环境 Swagger，裁剪出目标接口及依赖 |
+| [contract-align](./contract-align/) | 承接 prd-to-flow 产出，后端技术文档到位后做接口字段增量对齐：三源比对（前端需求 × 后端文档 × OpenAPI）+ 铁律「未确认必问清、不清晰必问到清晰」，产出 03-contract-align.md 决策记录 |
 
 ## 维护
 
