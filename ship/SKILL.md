@@ -1,9 +1,9 @@
 ---
 name: ship
-description: 一键发布流程：智能分批提交当前改动并推送当前分支，然后把当前分支合并到 develop（自动定位或创建 develop 的 worktree）并推送 develop。当用户明确说「提交推送然后把当前分支合并到 develop 再推送」「合到 develop」「发布」「ship」等包含 develop 合并意图的组合指令时使用。用户只说「提交」「提交推送」而不提 develop 时不要自动合并——只做提交与推送，完成后询问是否继续合并 develop。
+description: 一键发布流程：智能分批提交当前改动并推送当前分支，然后把当前分支合并到 develop（自动定位或创建 develop 的 worktree）并推送 develop，最后挂起监听 develop 流水线结果并在结束后汇报。当用户明确说「提交推送然后把当前分支合并到 develop 再推送」「合到 develop」「发布」「ship」等包含 develop 合并意图的组合指令时使用。用户只说「提交」「提交推送」而不提 develop 时不要自动合并——只做提交与推送，完成后询问是否继续合并 develop。
 ---
 
-# ship：提交 → 推送 → 合并 develop → 推送
+# ship：提交 → 推送 → 合并 develop → 推送 → 盯流水线
 
 四个阶段严格按顺序执行，每个阶段成功后再进入下一个。任何阶段失败（冲突、推送被拒、分叉、脏工作区风险）都停下来向用户报告，不要自行绕过。
 
@@ -97,6 +97,20 @@ git -C <develop-worktree或临时目录> push origin develop
 
 推送被拒（远端又有新提交）：停下报告，不要 force。
 
+## 第 5 步：监听 develop 流水线（推送成功后执行）
+
+第 4 步推送成功后，用**后台任务**（run_in_background）挂起等待流水线结果，随后照常输出完成报告（注明「流水线监听中」），出结果后再补一条汇报：
+
+```bash
+# --wait 会挂住直到最新流水线 success/failed/canceled，退出码非 0 即失败
+glab ci status --branch develop --wait --compact
+```
+
+- 本地 CLI 的「监听」本质是 glab 封装好的轮询（`--wait` 挂住到结束）；真推送（Pipeline Events webhook）需要 GitLab 可达的接收端，本地终端场景不适用。
+- 本项目分支推送/MR 不触发流水线，只有 develop 与 `-online` 分支有，等待对象固定是 develop。
+- 失败时归因：`glab api "projects/:id/pipelines?per_page=5"` 取最新流水线 ID → `glab api projects/:id/pipelines/<id>/jobs` 定位失败 job → `glab api projects/:id/jobs/<job-id>/trace` 拉日志尾部（约最后 100 行）；只报告结论与关键报错，不贴全量日志。
+- 通过时顺带确认 `release-test` job 已执行（即已发布测试环境），提醒用户可去测试环境验证本次改动。
+
 ## 完成报告
 
 一段简洁的中文总结，包含：
@@ -104,4 +118,5 @@ git -C <develop-worktree或临时目录> push origin develop
 - 本次提交列表（用第 1 步记录的 `origin/<分支>..<分支>` 范围，不要裸跑 `git log` 列全量历史）；
 - 两个分支的推送区间（如 `db068ce9c..8f5ff6ff3`）；
 - develop 合并结果：`git -C <worktree> rev-parse --short HEAD` 的短哈希（`--no-ff` 下即 merge commit）；
-- 值得注意的事项：develop worktree 里的脏文件、远端新提交被同步进来、用户自己的中间提交被一并推送、临时 worktree 是否已清理等。
+- 值得注意的事项：develop worktree 里的脏文件、远端新提交被同步进来、用户自己的中间提交被一并推送、临时 worktree 是否已清理等；
+- 流水线监听状态：第 5 步已挂起则注明「监听中」，结束后补报最终结果（成功 / 失败原因与失败 job）。
