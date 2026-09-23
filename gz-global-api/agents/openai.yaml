@@ -1,0 +1,4 @@
+interface:
+  display_name: "gz-global-api"
+  short_description: "Query OpenAPI contracts for global-station Java interfaces"
+  default_prompt: "Use $gz-global-api to fetch the OpenAPI contract of a global-station Java interface (e.g. /os/user/sso/account/login)."
