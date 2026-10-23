@@ -1,5 +1,5 @@
 ---
-name: prd-to-flow
+name: prd-to-breakdown
 description: 把 PRD / 需求文档拆解成可执行的任务卡与技术方案——先反向调研当前代码库摸清模块结构和既有约定，再对 PRD 模糊点向用户提问确认，最后输出「需求拆解文档 + 含代码落点的技术方案 + 任务卡」。只要用户给出 PRD、需求文档、需求列表、产品原型说明，或者提到「拆需求」「需求拆解」「拆分需求」「按 PRD 排期」「这个需求怎么落地」「帮我评估工作量」「需求转任务」，就必须使用本 skill。即使用户只是丢来一段需求描述并问「怎么做」，也应当先走本流程再动手，不要直接开始写代码。
 ---
 
@@ -315,10 +315,10 @@ Epic（本次需求的几个大块，通常 2~5 个）
 
 ### 输出位置
 
-**所有产出统一写到 `~/.claude/prd-flow/workspace/<JIRA号>/`，不写进业务仓库。** 需求文档是个人工作产物，不进 git、不占仓库状态。
+**所有产出统一写到 `~/.prd-to-breakdown/workspace/<JIRA号>/`，不写进业务仓库。** 需求文档是个人工作产物，不进 git、不占仓库状态。
 
 ```
-~/.claude/prd-flow/
+~/.prd-to-breakdown/
 ├── README.md                       ← 入口：所有需求的总索引
 └── workspace/
     ├── PROJ-123/                   ← 一个 Jira 号一个目录
@@ -334,7 +334,7 @@ Epic（本次需求的几个大块，通常 2~5 个）
         └── ...
 ```
 
-**目录名取 Jira 号**（如 `PROJ-123`）。Jira 号一般在 PRD 的「Jira」字段里，格式形如 `[PROJ-123](...)`。若 PRD 里没有 Jira 号，用需求的 kebab-case 短名代替，并在 `~/.claude/prd-flow/README.md` 里标注「无 Jira 号」。
+**目录名取 Jira 号**（如 `PROJ-123`）。Jira 号一般在 PRD 的「Jira」字段里，格式形如 `[PROJ-123](...)`。若 PRD 里没有 Jira 号，用需求的 kebab-case 短名代替，并在 `~/.prd-to-breakdown/README.md` 里标注「无 Jira 号」。
 
 > ⚠️ **不要用当前工作目录名当目录名。** 业务仓库常以 git worktree 工作，worktree 目录名虽也是 Jira 号，但 worktree 会随任务创建/清理，路径不稳定。始终以 PRD 里写的 Jira 号为准。
 
@@ -342,7 +342,7 @@ Epic（本次需求的几个大块，通常 2~5 个）
 
 ### 每完成一次拆解，都要更新总索引
 
-`~/.claude/prd-flow/README.md` 是入口，每次产出后必须追加/更新一行：
+`~/.prd-to-breakdown/README.md` 是入口，每次产出后必须追加/更新一行：
 
 ```markdown
 | Jira | 需求 | 状态 | 范围 | 产出日期 | 路径 |
@@ -352,13 +352,13 @@ Epic（本次需求的几个大块，通常 2~5 个）
 
 状态取值：`已拆解` / `开发中` / `已完成` / `已废弃`。重复拆解同一需求时更新该行，不要重复追加。
 
-目录首次创建时，同时初始化 `~/.claude/prd-flow/README.md`（含标题、用途说明、索引表格表头）。
+目录首次创建时，同时初始化 `~/.prd-to-breakdown/README.md`（含标题、用途说明、索引表格表头）。
 
 ### 自检时额外确认
 
-- [ ] 产出落在 `~/.claude/prd-flow/workspace/<Jira号>/`，**没有**写进业务仓库
+- [ ] 产出落在 `~/.prd-to-breakdown/workspace/<Jira号>/`，**没有**写进业务仓库
 - [ ] 目录名取自 PRD 里的 Jira 号，不是 `pwd` 的目录名
-- [ ] `~/.claude/prd-flow/README.md` 的索引行已更新（新增或覆盖）
+- [ ] `~/.prd-to-breakdown/README.md` 的索引行已更新（新增或覆盖）
 
 ### 输出语言
 

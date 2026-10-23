@@ -16,13 +16,13 @@ git clone git@github.com:manqingchen/skills.git
 
 | Skill | 说明 |
 |---|---|
-| [prd-to-flow](./prd-to-flow/) | 把 PRD / 需求文档拆解为可执行任务卡与技术方案：反向调研代码库 → 向用户确认模糊点 → 拆解文档 + 技术方案 + 任务卡 |
+| [prd-to-breakdown](./prd-to-breakdown/) | 把 PRD / 需求文档拆解为可执行任务卡与技术方案：反向调研代码库 → 向用户确认模糊点 → 拆解文档 + 技术方案 + 任务卡 |
 | [ui-restore](./ui-restore/) | 设计稿 HTML → UI 像素级还原的强制工作流（解析 design-manifest → 样式对照表 → 双宽度截图比对） |
 | [typesafe-ai](./typesafe-ai/) | TypeSafe：把 AI 判断封装成可编程原语（第三方技能，MIT License，见目录内 LICENSE） |
 | [ship](./ship/) | 一键发布：智能分批提交并推送当前分支 → 合并到 develop（自动定位或创建 worktree）→ 推送 develop |
 | [smart-commit](./smart-commit/) | 智能分批提交（ship 提交阶段的委托执行者）：敏感文件预检 → 按「一个提交只做一件事」逻辑分组 → conventional 中文提交 → 核对输出分组清单；只提交不推送 |
 | [gz-global-api](./gz-global-api/) | 查询海外站 Java 接口的 OpenAPI 契约：网关 `/os/{service}/...` URI → 拉取测试环境 Swagger，裁剪出目标接口及依赖 |
-| [contract-align](./contract-align/) | 承接 prd-to-flow 产出，后端技术文档到位后做接口字段增量对齐：三源比对（前端需求 × 后端文档 × OpenAPI）+ 铁律「未确认必问清、不清晰必问到清晰」，产出 03-contract-align.md 决策记录 |
+| [contract-align](./contract-align/) | 承接 prd-to-breakdown 产出，后端技术文档到位后做接口字段增量对齐：三源比对（前端需求 × 后端文档 × OpenAPI）+ 铁律「未确认必问清、不清晰必问到清晰」，产出 03-contract-align.md 决策记录 |
 
 ## 维护
 
