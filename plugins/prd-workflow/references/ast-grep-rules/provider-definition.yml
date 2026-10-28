@@ -1,0 +1,6 @@
+id: provider-definition
+language: Ts
+rule:
+  pattern: createContext<$T>($$$)
+message: Context Provider 定义点（状态归属候选）
+severity: info

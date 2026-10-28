@@ -1,0 +1,19 @@
+{
+  "name": "dev-prd-workflow",
+  "plugins": [
+    {
+      "name": "prd-workflow",
+      "source": "./prd-workflow",
+      "version": "1.6.0",
+      "description": "需求交付工作流：PRD 拆解写入 SQLite 状态库 → 按任务执行并回写验收 → 验收纠正回流为技能升级。含共享 CLI 与项目原文（Demand collection）管理。",
+      "displayName": "PRD Workflow",
+      "displayName_i18n": {
+        "zh-CN": "需求交付工作流"
+      },
+      "description_i18n": {
+        "zh-CN": "PRD 拆解 → 任务执行 → 验收纠正 → 技能升级，共用一份 SQLite 状态库"
+      },
+      "category": "productivity"
+    }
+  ]
+}

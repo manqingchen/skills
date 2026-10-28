@@ -1,0 +1,9 @@
+id: event-bus
+language: Ts
+rule:
+  any:
+    - pattern: eventEmitter.emit($$$)
+    - pattern: eventEmitter.on($$$)
+    - pattern: eventEmitter.off($$$)
+message: 事件总线调用点（codegraph 看不到的字符串事件，需人工核对发布/订阅配对）
+severity: info

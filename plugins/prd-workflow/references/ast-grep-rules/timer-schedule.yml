@@ -1,0 +1,8 @@
+id: timer-schedule
+language: Ts
+rule:
+  any:
+    - pattern: setInterval($$$)
+    - pattern: setTimeout($$$)
+message: 定时器（轮询 / 延时刷新候选）
+severity: info

@@ -1,0 +1,9 @@
+id: http-request
+language: Ts
+rule:
+  any:
+    - pattern: request($$$)
+    - pattern: request<$T>($$$)
+    - pattern: fetch($$$)
+message: 请求调用点（判断是否收口在 service 层）
+severity: info

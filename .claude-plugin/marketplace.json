@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "dev-prd-workflow",
+  "description": "本地开发市场：需求交付工作流插件（PRD 拆解 → 任务执行 → 验收纠正 → 技能升级）",
+  "owner": {
+    "name": "zhangbohan1"
+  },
+  "plugins": [
+    {
+      "name": "prd-workflow",
+      "description": "需求交付工作流：PRD 拆解写入 SQLite 状态库 → 按任务执行并回写验收 → 验收纠正回流为技能升级。含共享 CLI 与需求原文（Demand collection）管理。",
+      "version": "1.6.0",
+      "author": {
+        "name": "zhangbohan1"
+      },
+      "category": "productivity",
+      "source": "./plugins/prd-workflow"
+    }
+  ]
+}

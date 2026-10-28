@@ -1,0 +1,9 @@
+id: i18n-usage
+language: Ts
+rule:
+  any:
+    - pattern: useTranslation($$$)
+    - pattern: i18n.t($$$)
+    - pattern: i18n.getFixedT($$$)
+message: i18n 使用点（词典键的消费方式）
+severity: info

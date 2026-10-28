@@ -1,0 +1,12 @@
+id: storage-access
+language: Ts
+rule:
+  any:
+    - pattern: localStorage.getItem($K)
+    - pattern: localStorage.setItem($K, $$$)
+    - pattern: localStorage.removeItem($K)
+    - pattern: sessionStorage.getItem($K)
+    - pattern: sessionStorage.setItem($K, $$$)
+    - pattern: sessionStorage.removeItem($K)
+message: 本地存储访问点（状态持久化候选）
+severity: info

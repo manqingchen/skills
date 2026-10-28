@@ -1,0 +1,12 @@
+id: hook-export
+language: Ts
+rule:
+  any:
+    - kind: function_declaration
+      inside: {kind: export_statement}
+      has: {field: name, regex: '^use[A-Z]'}
+    - kind: variable_declarator
+      inside: {kind: export_statement}
+      has: {field: name, regex: '^use[A-Z]'}
+message: 导出的自定义 hook（可复用逻辑候选）
+severity: info
