@@ -1,0 +1,22 @@
+{
+  "name": "gwiki",
+  "version": "2.3.6",
+  "description": "通过云端 LLM 知识库回答公司业务问题、需求评审、需求撰写、代码联动分析。支持自然语言提问，自动识别意图并路由到对应模式（gwiki、gwiki-plus、gwiki-requirement-review、gwiki-requirement-write）。Agent 内部调用 gwiki.js，不向用户暴露 CLI 参数或 KB ID。",
+  "entrypoint": "SKILL.md",
+  "files": [
+    "SKILL.md",
+    "VERSION",
+    "manifest.json",
+    "install.sh",
+    "package.json",
+    "bin",
+    "lib",
+    "agents",
+    "grills",
+    "gwiki-plus",
+    "gwiki-requirement-review",
+    "gwiki-update-skill",
+    "gwiki-lock",
+    "gwiki-unlock"
+  ]
+}

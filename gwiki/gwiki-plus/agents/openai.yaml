@@ -1,0 +1,4 @@
+interface:
+  display_name: "GWiki Plus"
+  short_description: "Cloud wiki query with business and code evidence"
+  default_prompt: "用 gwiki-plus 回答这个问题："

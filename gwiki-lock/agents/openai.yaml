@@ -1,0 +1,4 @@
+interface:
+  display_name: "GWiki Lock"
+  short_description: "Set default knowledge base(s) for GWiki queries"
+  default_prompt: "用 gwiki-lock 锁定知识库："

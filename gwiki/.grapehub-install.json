@@ -1,0 +1,16 @@
+{
+    "installedBy": "grapehub-cli",
+    "slug": "gwiki",
+    "version": "2.3.6",
+    "installedAt": "2026-10-15T08:51:47.850Z",
+    "baseUrl": "https://skills.guazi-apps.com",
+    "targetKey": "zcode",
+    "relativePath": ".zcode/skills/gwiki",
+    "bundleSubSkills": [
+        "gwiki-lock",
+        "gwiki-plus",
+        "gwiki-requirement-review",
+        "gwiki-unlock",
+        "gwiki-update-skill"
+    ]
+}

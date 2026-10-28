@@ -1,0 +1,7 @@
+{
+	"name": "cwiki-upload",
+	"version": "1.0.0",
+	"description": "将本地 Markdown 发布到 cwiki 的 skill。",
+	"entrypoint": "SKILL.md",
+	"files": ["scripts"]
+}

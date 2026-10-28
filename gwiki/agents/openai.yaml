@@ -1,0 +1,4 @@
+interface:
+  display_name: "GWiki"
+  short_description: "Cloud LLM Wiki: query, gwiki-plus, gwiki-requirement-review"
+  default_prompt: "Use gwiki for company wiki questions. Route to query, gwiki-plus (code evidence), or gwiki-requirement-review by user intent. Users speak naturally; run gwiki.js internally—never expose kb ids or CLI flags."

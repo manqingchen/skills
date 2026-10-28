@@ -1,0 +1,7 @@
+{
+	"name": "cwiki-download",
+	"version": "1.0.0",
+	"description": "将 cwiki 页面下载为本地 Markdown 的工具。",
+	"entrypoint": "SKILL.md",
+	"files": ["scripts"]
+}

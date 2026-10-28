@@ -1,0 +1,4 @@
+interface:
+  display_name: "GWiki Requirement Review"
+  short_description: "Cloud PRD and requirement review"
+  default_prompt: "用 gwiki-requirement-review 评审这份需求："

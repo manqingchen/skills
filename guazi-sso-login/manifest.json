@@ -1,0 +1,7 @@
+{
+	"name": "guazi-sso-login",
+	"version": "1.0.0",
+	"description": "需要获取瓜子 SSO Cookie、CHDSSO token 或 cwiki.guazi.com Wiki 登录态。",
+	"entrypoint": "SKILL.md",
+	"files": ["scripts"]
+}

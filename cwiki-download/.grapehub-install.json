@@ -1,0 +1,9 @@
+{
+    "installedBy": "grapehub-cli",
+    "slug": "cwiki-download",
+    "version": "1.0.0",
+    "installedAt": "2026-10-21T08:50:39.760Z",
+    "baseUrl": "https://skills.guazi-apps.com",
+    "targetKey": "zcode",
+    "relativePath": ".zcode/skills/cwiki-download"
+}

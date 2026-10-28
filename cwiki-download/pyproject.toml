@@ -1,0 +1,25 @@
+[project]
+name = "cwiki-download"
+version = "0.1.0"
+description = "Confluence 页面下载与 Markdown 落盘工具"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4",
+  "httpx",
+  "lxml",
+  "markdownify",
+  "websockets",
+]
+
+[project.scripts]
+cwiki-download = "scripts.cwiki_download:main"
+
+[dependency-groups]
+dev = [
+  "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "GWiki Unlock"
+  short_description: "Release GWiki default knowledge base lock"
+  default_prompt: "用 gwiki-unlock 解除知识库锁定："

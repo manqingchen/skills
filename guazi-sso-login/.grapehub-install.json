@@ -1,0 +1,9 @@
+{
+    "installedBy": "grapehub-cli",
+    "slug": "guazi-sso-login",
+    "version": "1.0.0",
+    "installedAt": "2026-10-21T08:50:33.187Z",
+    "baseUrl": "https://skills.guazi-apps.com",
+    "targetKey": "zcode",
+    "relativePath": ".zcode/skills/guazi-sso-login"
+}

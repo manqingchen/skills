@@ -1,0 +1,23 @@
+[project]
+name = "cwiki-upload"
+version = "0.1.0"
+description = "本地 Markdown 发布到 Confluence 的工具"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx",
+  "markdown-it-py>=4.0.0",
+  "websockets",
+]
+
+[project.scripts]
+cwiki-upload = "scripts.cwiki_upload:main"
+
+[dependency-groups]
+dev = [
+  "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
