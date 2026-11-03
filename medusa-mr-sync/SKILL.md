@@ -1,6 +1,6 @@
 ---
 name: medusa-mr-sync
-description: 核对一次发布用的分支有没有合进主干；没合就在 GitLab 建 `<分支> → master` 的 MR 并合并。只有 `status=done` 的发布会自动合并；`running` / `cancel` 只查发布段并上报。载荷区间 `target..source` 内任一 merge 的非第一父节点不在目标历史里、或源分支存在 opened MR 时，不自动合并、只上报。单次查发布用 `--jira/--tag/--branch`；批量巡查用 `--patrol`，覆盖 guazi-flow inbox 的所有项目。每次核对都会强制判定发布段（production / preview-only / unknown / not-applicable）。当用户说「这次发布的分支合 master 了吗」「把发版分支合进 master」「巡查一下所有项目有没有漏合」「这是预发还是生产发布」时使用。只管合并与发布段判定；打 tag、审批、部署用 online-release，日常提交用 smart-commit。
+description: 核对一次发布用的分支有没有合进主干；没合就在 GitLab 建 `<分支> → master` 的 MR 并合并。建/合并 MR 默认走 `multica gitlab mr ensure/merge`，可用 `--as-user` 用需求负责人（默认取发布记录的 `operator`）的 GitLab 账号执行。只有 `status=done` 的发布会自动合并；`running` / `cancel` 只查发布段并上报。载荷区间 `target..source` 内任一 merge 的非第一父节点不在目标历史里时不自动合并、只上报。源分支已有 opened MR 时：目标相同且非 Draft 的直接复用并自动合并（不新建、不改标题描述）；Draft 或目标不同的仍只上报。单次查发布用 `--jira/--tag/--branch`；批量巡查用 `--patrol`，覆盖 guazi-flow inbox 的所有项目。每次核对都会强制判定发布段（production / preview-only / unknown / not-applicable）。当用户说「这次发布的分支合 master 了吗」「把发版分支合进 master」「巡查一下所有项目有没有漏合」「这是预发还是生产发布」时使用。只管合并与发布段判定；打 tag、审批、部署用 online-release，日常提交用 smart-commit。
 ---
 
 # medusa-mr-sync：发布分支有没有进 master
@@ -9,15 +9,15 @@ description: 核对一次发布用的分支有没有合进主干；没合就在 
 
 ## 固定流程（没有跳过开关）
 
-单次和批量按同一顺序执行，命中 `3` 或 `4` 直接结束并上报，不建 MR、不合并：
+单次和批量按同一顺序执行，命中 `3` 或 `4`（且无可复用 MR）直接结束并上报，不建 MR、不合并：
 
 | 顺序 | 检查 | 不通过时 |
 | --- | --- | --- |
 | 1 | 取发布记录并判定发布段 | 接口失败 → `MEDUSA_FAILED`（终止）；判定为 unknown 不阻断合并，但结论不能写「已上线生产」 |
 | 2 | 发布状态必须是 `done` | `running` → `RELEASE_NOT_FINISHED`；`cancel` → `RELEASE_CANCELED`（只上报） |
 | 3 | 载荷区间 `target..source` 内的 merge 提交 | 任一非第一父节点不在目标历史里/无法确认 → `PAYLOAD_MERGE_COMMIT` |
-| 4 | 源分支上是否有 opened MR | 有 → `OPENED_MR_EXISTS` |
-| 5 | 全部通过 | 才允许建 MR / 合并 |
+| 4 | 源分支上是否有 opened MR | 目标相同且非 Draft → **复用该 MR 并自动合并**（不新建、不改标题描述）；Draft 或目标不同 → `OPENED_MR_EXISTS` |
+| 5 | 全部通过 | 才允许建 MR / 合并（或复用已有 MR 合并） |
 
 ### 管線实现（强制串行）
 
@@ -30,10 +30,10 @@ description: 核对一次发布用的分支有没有合进主干；没合就在 
 5. `already-merged` — 提交已在目标分支则结束
 6. `source-branch` — 选源分支
 7. `payload-merge` — 载荷区间 merge 检查
-8. `opened-mr` — 源分支 opened MR 检查
+8. `opened-mr` — 源分支 opened MR 检查（同目标非 Draft → 复用，交给 `write` 合并）
 9. `merged-mr` — 已 merged MR 视为已合
 10. `squash-check` — 区间无提交视为已合（批量模式）
-11. `write` — 唯一允许产生副作用的门禁（建 MR / 合并）
+11. `write` — 唯一允许产生副作用的门禁（经 multica 建/合并 MR；`--mr-backend gitlab` 时走旧的 glab 通道）
 
 `deploy-stage` 是一个整体：拉事件和判定预发/生产在同一门禁内完成，单次和批量都走这里；
 批量模式不再在候选收集阶段提前判定。`release-state` 紧接着判断 done/cancel/running。
@@ -164,19 +164,20 @@ $ node sync-mr.mjs --branch OS-40940 --dry-run
  "message":"按要求不自动合并：载荷区间 master..OS-40940 的 merge 内容未通过检查：合入的父提交 04c106d5 不在 master 历史里（来自 merge fe29f1ba Merge branch 'feat/home-ssg' into 'OS-40940'）；请人工确认 OS-40940 的内容"}
 ```
 
-## 强制检查 4：源分支上的 opened MR
+## 强制检查 4：源分支上的 opened MR（同目标非 Draft → 复用并自动合并）
 
 - 查询对象是**最终选中的源分支**（不是所有包含该提交的分支）；
-- 不区分目标分支，`state=opened` 即可；GitLab 的 Draft MR 也是 `opened`，同样拦截；
-- 多条 opened MR 按 `iid` 升序取第一条上报；
-- 不复用、不合并、不关闭任何已有 MR。
+- 决策规则（`decideOpenedMrs`，单次/批量共用）：
+  - **目标分支相同且非 Draft 的 opened MR → 复用并自动合并**：跳过建 MR，直接等它可合并后合并；
+    不改它的标题/描述、不关闭、不新建重复 MR（用户自己建的 MR 也直接接管合并）；
+  - **Draft、或目标分支不同的 opened MR → 仍只上报 `OPENED_MR_EXISTS`**：不替人合并未准备好的 MR，
+    也不把去往其他分支（如 develop）的 MR 合到 master；
+- 多条可复用时按 `iid` 升序取第一条（GitLab 同源同目标最多一条 opened，此规则只为确定性兜底）；
+- 复用合并的事件带 `reused: true`；`--no-merge` 时复用条目状态为 `reused`（只确认复用、不合并）；
+- 巡检自己上一轮建的、仍处于 opened 的 MR 同样会被复用重试合并（此前会被自己拦住）。
 
-实测（2026-11-02）：csp 项目 `SCC-42193` 分支存在 MR !1689，巡查当时输出：
-
-```json
-{"status":"OPENED_MR_EXISTS",
- "detail":"按要求不自动合并：源分支 SCC-42193 存在 opened MR !1689（https://git.guazi-corp.com/c2b-fe/csp/merge_requests/1689，目标 master）"}
-```
+对照（2026-11-02 旧行为，现已改为复用合并）：csp 项目 `SCC-42193` 分支存在目标为 master 的 opened MR !1689，
+当时输出 `OPENED_MR_EXISTS` 只上报；按现行规则会直接复用 !1689 并合并。
 
 ## 源分支选择（确定性）
 
@@ -225,10 +226,21 @@ node sync-mr.mjs --tag OS-43538-20261029195356-online --dry-run
 # 只建 MR，不合并
 node sync-mr.mjs --jira OS-43538 --no-merge
 
+# 用指定的 multica 成员账号建/合并（不传则自动取发布 operator）
+node sync-mr.mjs --jira OS-43538 --as-user zhangbohan1
+node sync-mr.mjs --jira OS-43538 --as-user 3f2a...（user_id）
+
+# 不用负责人账号，明确用调用者自己的账号
+node sync-mr.mjs --jira OS-43538 --no-as-user
+
+# 退回旧的 glab 写入通道
+node sync-mr.mjs --jira OS-43538 --mr-backend gitlab
+
 # 批量巡查：默认只读，必须显式 --enable-writes 才写入
 node sync-mr.mjs --patrol
 node sync-mr.mjs --patrol --project global-station
 node sync-mr.mjs --patrol --enable-writes
+node sync-mr.mjs --patrol --enable-writes --as-user zhangbohan1
 ```
 
 `--dry-run` 也是完整执行全部检查，只是在「建 MR / 合并」前停下。命中硬规则时与正式运行一样返回
@@ -240,6 +252,10 @@ node sync-mr.mjs --patrol --enable-writes
    取 `project_title / repository_path / default_ref`。
 2. 发布候选：
    - 美杜莎应用（`apps.gitlabPid` 与 `repository_path` 小写后完全相等）→ 最近 `--medusa-history` 条发布记录；
+     应用清单**翻页取全量**（服务端单页硬上限 500，全量实测 1011 行 / 去重 958 个，只取第一页会丢掉
+     排在后面的 namespace——2026-11-03 平台巡检曾因此把 `oversea` 整组 29 个应用误判为非美杜莎项目）；
+   - 列表未命中的仓库不直接判「非美杜莎」：先用 `apps(namespace, appName)` 定向探测一次
+     （服务端模糊过滤 + 客户端 gitlabPid 精确匹配），探到就按美杜莎应用处理，防运行时账号的列表视图缺组；
    - 其他仓库 → 仓库最近 `--since-hours` 内打的 `*-online` tag（排除 `-pre-online`）。
 3. `--since-hours`：美杜莎按任务 `createdAt`，其他仓库按 tag 提交时间；**`<= 0` 表示不过滤**。
 4. 合并目标：美杜莎应用 `master` → `main` → `default_ref`；其他仓库 `default_ref` → `master` → `main` → `develop`。
@@ -274,6 +290,42 @@ MR 的源是**源分支当前尖端**，不是 tag 指向的提交。tag 之后�
 - 描述：Jira / tag / 部署任务 / **发布段** / 分支与提交数 / `git diff --shortstat` / 只列 `feat`（最多 8 项）；
 - 不复用、不修改任何已有 MR 的标题和描述。
 
+## MR 账号：用需求负责人身份建/合并
+
+建/合并 MR 默认走 `multica gitlab mr ensure/merge`（cwiki pageId=735803048），
+这样 MR 的创建者/合并者可以是需求负责人，而不是巡检账号。
+
+**账号选择顺序**（`--as-user` > 发布 `operator` > 调用者账号）：
+
+| 情况 | 实际账号 |
+| --- | --- |
+| 传了 `--as-user <user_id\|username>` | 该成员 |
+| 没传，发布记录有 `operator` | `operator` 对应的 multica 成员 |
+| 没传，发布记录也没有 `operator`（非美杜莎 tag） | 不传 `--as-user`，用调用者自己的账号 |
+| 传了 `--no-as-user` | 不传 `--as-user`，用调用者自己的账号 |
+
+`operator` 取美杜莎 `deployHistory.operator`（如 `zhangbohan1`），按 `workspace member list`
+的 `username / name / email / user_id` **精确匹配**（忽略大小写）。匹配不到直接报
+`AS_USER_NOT_FOUND`，不会悄悄换成调用者账号；此时用 `--as-user` 指定，或 `--no-as-user` 明确放弃。
+
+**需要准备的 ID**（各查询一次即可）：
+
+```bash
+multica repo list --output json              # 取仓库的 project_binding_id
+multica workspace member list --output json  # 取成员的 user_id（不要用成员记录的 id）
+```
+
+**前置条件**：multica CLI 已支持 `gitlab mr`（旧版本会报 `MULTICA_GITLAB_UNAVAILABLE`，先
+`multica update`）；已 `multica login`；调用者是工作区 owner/admin；仓库已在
+「设置 → GitLab」完成绑定；被指定的成员已连接自己的 GitLab 账号并有目标分支合并权限。
+
+`--head-sha` 统一传**源分支当前尖端**（单次 `git rev-parse origin/<source>`，批量读远端分支），
+不是发布提交。`ensure` 遇到同源同目标的 MR 会直接复用、不改原有内容；现行流程里源分支已有同目标、
+非 Draft 的 opened MR 时在 `opened-mr` 门禁就标记复用，`write` 阶段跳过 ensure/建 MR 直接合并它。
+读类检查（opened MR、已合并 MR、合并状态）仍走原来的 glab / REST 通道。
+
+需要退回旧的 glab / REST 写入时用 `--mr-backend gitlab`；该模式不接受 `--as-user`。
+
 ## 参数
 
 | 参数 | 默认 | 说明 |
@@ -286,10 +338,13 @@ MR 的源是**源分支当前尖端**，不是 tag 指向的提交。tag 之后�
 | `--target` | `master` | 目标分支（批量模式按项目类型自动选，见上文） |
 | `--title` | 自动 | 显式 MR 标题 |
 | `--dry-run` | 关 | 只读；检查流程完整执行，命中硬规则返回 `ok:false` |
-| `--no-merge` | 关 | 只建 MR，不合并；命中硬规则时连 MR 也不建 |
-| `--wait-pipeline` | 关 | 使用 GitLab「流水线通过后自动合并」 |
+| `--no-merge` | 关 | 只建 MR，不合并；已有可复用 MR 时只确认复用（状态 `reused`）；命中硬规则时连 MR 也不建 |
+| `--wait-pipeline` | 关 | 等流水线通过再合并；multica 通道轮询到可合并，gitlab 通道用 GitLab 自动合并 |
 | `--timeout-minutes` | 30 | 等 MR 变可合并的最长时间 |
 | `--poll-ms` | 10000 | 轮询间隔 |
+| `--as-user` | 发布 `operator` | 用哪个 multica 成员的账号建/合并（user_id 或 username）；显式指定优先 |
+| `--no-as-user` | 关 | 不指定账号，用调用者自己的账号 |
+| `--mr-backend` | `multica` | 写入通道：`multica`（默认）或 `gitlab`（旧的 glab 通道，不接受 `--as-user`） |
 
 批量（`--patrol`）额外参数：
 
@@ -304,6 +359,9 @@ MR 的源是**源分支当前尖端**，不是 tag 指向的提交。tag 之后�
 | `--include` / `--exclude` | 无 | 精确匹配 `project_title` 或 `repository_path`（忽略大小写），逗号分隔，无通配符 |
 | `--target` | 自动 | 强制所有项目合并到同一分支 |
 | `--enable-writes` | 关 | 批量写入总开关：不加就只读 |
+| `--as-user` | 各发布 `operator` | 用哪个 multica 成员的账号建/合并；显式指定优先，非美杜莎项目默认不指定 |
+| `--no-as-user` | 关 | 全部用调用者自己的账号 |
+| `--mr-backend` | `multica` | 写入通道：`multica`（默认）或 `gitlab`（旧的 REST 通道） |
 
 ## 结果与失败码
 
@@ -323,12 +381,19 @@ MR 的源是**源分支当前尖端**，不是 tag 指向的提交。tag 之后�
 | `NO_TARGET_BRANCH` | 批量：`default_ref / master / main / develop` 都不存在 | 用 `--target` 指定 |
 | `PROJECT_NOT_FOUND` | `--project` 没匹配到 inbox 项目 | 用精确项目名或仓库 path |
 | `PAYLOAD_MERGE_COMMIT` | 载荷区间的 merge 内容未通过检查（外部分支 / 无法确认 / compare 截断） | 人工确认后处理 |
-| `OPENED_MR_EXISTS` | 源分支存在 opened MR（含 Draft） | 人工评审/关闭后重跑 |
+| `OPENED_MR_EXISTS` | 源分支的 opened MR 不可复用（Draft 或目标分支不同） | 处理该 MR（转正/改目标/关闭）后重跑；目标相同且非 Draft 的 opened MR 会被直接复用合并，不再报此码 |
 | `MR_CONFLICT` | MR 有冲突 | 人工解冲突后重跑 |
 | `MR_NOT_MERGEABLE` | `need_rebase / not_approved / blocked_status / ci_must_pass / not_open` | 按状态处理，或加 `--wait-pipeline` |
 | `MR_TIMEOUT` | 等 MR 可合并超时 | 去 MR 页面看卡点 |
 | `GIT_FAILED` | git 命令失败 | 看原始报错 |
 | `GITLAB_FAILED` | GitLab 接口失败 | 看原始报错 |
+| `MULTICA_UNAVAILABLE` | 找不到 multica CLI | 安装 multica 并 `multica login` |
+| `MULTICA_AUTH_REQUIRED` | multica 未登录或会话过期 | 执行 `multica login` |
+| `MULTICA_GITLAB_UNAVAILABLE` | 当前 multica 版本没有 `gitlab mr` 命令 | `multica update` 升级 |
+| `PROJECT_BINDING_NOT_FOUND` | 仓库不在 multica 工作区或未绑定 | 把仓库加入工作区并在「设置 → GitLab」绑定 |
+| `AS_USER_NOT_FOUND` | `operator` / `--as-user` 匹配不到工作区成员 | 用 `--as-user` 指定 user_id，或 `--no-as-user` |
+| `MULTICA_MR_FAILED` | `multica gitlab mr` 命令失败（含权限不足、冲突、审批阻塞） | 看原始报错；不要改用虚拟机账号 |
+| `MULTICA_MR_PARSE_FAILED` | 命令输出里解析不出 MR 编号 | 看原始输出，确认 CLI 版本 |
 
 批量模式 `summary` 固定字段：
 `merged / created / wouldCreate / alreadyMerged / noSource / conflicts / notMergeable / manualReview /
@@ -336,8 +401,14 @@ releaseNotFinished / releaseCanceled / failed / skipped`。
 
 ## 前置与凭证
 
-- 单次模式：在目标仓库目录下运行（脚本用当前目录的 git），`glab` 已登录且有该仓库的 Maintainer 权限；
-- 批量模式：不需要本地仓库和 glab，只要有 GitLab token 和 GUAZISSO；
+- 单次模式：在目标仓库目录下运行（脚本用当前目录的 git）；`glab` 已登录且有该仓库的 Maintainer 权限（读类检查用）。
+- 批量模式：不需要本地仓库和 glab；读类检查用 GitLab token，写入用 multica。
+- 写入（`--mr-backend multica`，默认）额外需要：
+  - multica CLI 支持 `gitlab mr`（旧版本先 `multica update`），且已 `multica login`；
+  - 调用者是 multica 工作区 owner/admin；
+  - 仓库已加入工作区并在「设置 → GitLab」绑定，能取到 `project_binding_id`；
+  - 被指定的需求负责人已连接自己的 GitLab 账号，且有目标分支合并权限。
 - 凭证链：
   - 美杜莎 / guazi-flow：`MEDUSA_COOKIE` / `GUAZISSO` → `guazi-sso-login` → `POST /auth/sso/identity` 换 `multica_auth`（或 `FLOW_COOKIE`）；
-  - GitLab：`GITLAB_TOKEN` / `PRIVATE_TOKEN` → `~/.git-credentials` → `glab config get token --host git.guazi-corp.com`。
+  - GitLab（只读检查）：`GITLAB_TOKEN` / `PRIVATE_TOKEN` → `~/.git-credentials` → `glab config get token --host git.guazi-corp.com`；
+  - multica（建/合并 MR）：由 multica CLI 自己管理登录态，脚本不读取、不回显任何 token。

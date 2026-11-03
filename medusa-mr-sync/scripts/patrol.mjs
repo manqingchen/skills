@@ -28,6 +28,7 @@ import {
   releaseState,
   sortByCreatedAtDesc,
   sortMrsById,
+  decideOpenedMrs,
   classifyDeployStage,
   stageLabel,
   analyzeMergeCommits,
@@ -37,6 +38,7 @@ import {
   stageBucket,
 } from './rules.mjs';
 import { runGates } from './pipeline.mjs';
+import { createMulticaGitlab } from './multica-mr.mjs';
 
 const DEFAULTS = {
   workspace: 'guazi',
@@ -57,6 +59,10 @@ const DEFAULTS = {
   include: '',
   exclude: '',
   enableWrites: false,
+  // 默认用 multica gitlab mr 建/合并；--mr-backend gitlab 可退回旧的 REST 通道
+  mrBackend: 'multica',
+  asUser: '',
+  noAsUser: false,
 };
 
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL || 'https://cjira.guazi-corp.com/browse';
@@ -89,6 +95,8 @@ function parseArgs(argv) {
     '--concurrency': 'concurrency',
     '--include': 'include',
     '--exclude': 'exclude',
+    '--as-user': 'asUser',
+    '--mr-backend': 'mrBackend',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i];
@@ -96,6 +104,7 @@ function parseArgs(argv) {
     else if (key === '--enable-writes') args.enableWrites = true;
     else if (key === '--no-merge') args.merge = false;
     else if (key === '--merge') args.merge = true;
+    else if (key === '--no-as-user') args.noAsUser = true;
     else if (key === '--wait-pipeline') args.waitPipeline = true;
     else if (key === '--patrol' || key === '--all') {
       /* 入口兼容：sync-mr.mjs --patrol 转发过来 */
@@ -114,6 +123,11 @@ function parseArgs(argv) {
     args[key] = Number(args[key]);
     if (!Number.isFinite(args[key]) || args[key] < 0) throw new Error(`参数 ${key} 不是合法数字`);
   });
+  if (!['multica', 'gitlab'].includes(args.mrBackend)) {
+    throw new Error('--mr-backend 只能是 multica 或 gitlab');
+  }
+  if (args.noAsUser && args.asUser) throw new Error('--as-user 与 --no-as-user 不能同时使用');
+  if (args.mrBackend === 'gitlab' && args.asUser) throw new Error('--as-user 只适用于 --mr-backend multica');
   // 运行环境的保险丝：不想让定时任务真的合并时，设 PATROL_DRY_RUN=1 / PATROL_NO_MERGE=1
   if (['1', 'true', 'yes'].includes(String(process.env.PATROL_DRY_RUN || '').toLowerCase())) args.dryRun = true;
   if (['1', 'true', 'yes'].includes(String(process.env.PATROL_NO_MERGE || '').toLowerCase())) args.merge = false;
@@ -307,10 +321,14 @@ const APPS_QUERY = `query($page: Int!, $itemsPerPage: Int!) {
   apps(page: $page, itemsPerPage: $itemsPerPage) { id name namespace gitlabPid }
 }`;
 
+const APPS_PROBE_QUERY = `query($page: Int!, $itemsPerPage: Int!, $namespace: String!, $appName: String!) {
+  apps(page: $page, itemsPerPage: $itemsPerPage, namespace: $namespace, appName: $appName) { id name namespace gitlabPid }
+}`;
+
 const HISTORY_QUERY = `query($id: String!, $itemsPerPage: Int!) {
   app(id: $id) {
     deployHistory(page: 1, itemsPerPage: $itemsPerPage) {
-      id status jiraID createdAt
+      id status jiraID operator createdAt
       gitlabCommit { id branch }
     }
   }
@@ -337,20 +355,77 @@ async function medusaGql(args, cookie, query, variables) {
   return payload.data || {};
 }
 
-async function fetchMedusaApps(args, cookie) {
-  const map = new Map();
-  const pageSizes = [500];
-  for (const itemsPerPage of pageSizes) {
-    const data = await medusaGql(args, cookie, APPS_QUERY, { page: 1, itemsPerPage });
-    const apps = (data.apps || []).filter((item) => item.gitlabPid);
-    apps.forEach((app) => {
-      map.set(app.gitlabPid.toLowerCase(), {
-        appId: `${app.namespace}/${app.name}`,
-        gitlabPid: app.gitlabPid,
-      });
+/** 把一页 apps 行合并进 map（按 gitlabPid 小写去重，先到先得） */
+export function mergeAppRows(map, rows) {
+  for (const app of rows || []) {
+    if (!app || !app.gitlabPid) continue;
+    const key = String(app.gitlabPid).toLowerCase();
+    if (map.has(key)) continue;
+    map.set(key, {
+      appId: `${app.namespace}/${app.name}`,
+      gitlabPid: app.gitlabPid,
     });
   }
   return map;
+}
+
+/**
+ * 翻页取全量美杜莎应用。服务端单页硬上限 500，全量可能超过一页（2026-11-03 实测 1011 行 / 去重 958 个），
+ * 只取第一页会把排在后面的 namespace（如 oversea 整组 29 个应用）整个丢掉，导致这些仓库被误判为非美杜莎项目。
+ * 防死循环：某整页没有带来任何新 key（服务端忽略 page 参数、重复返回同一页）时停止。
+ */
+export async function collectMedusaApps(fetchPage, { itemsPerPage = 500, maxPages = 50 } = {}) {
+  const map = new Map();
+  for (let page = 1; page <= maxPages; page += 1) {
+    const rows = (await fetchPage(page, itemsPerPage)) || [];
+    const before = map.size;
+    mergeAppRows(map, rows);
+    if (rows.length < itemsPerPage) break;
+    if (map.size === before) break;
+  }
+  return map;
+}
+
+async function fetchMedusaApps(args, cookie) {
+  return collectMedusaApps((page, itemsPerPage) =>
+    medusaGql(args, cookie, APPS_QUERY, { page, itemsPerPage }).then((data) => data.apps || []),
+  );
+}
+
+/**
+ * 定向兜底：apps(namespace, appName) 是服务端模糊过滤（appName 为包含匹配），
+ * 客户端再对 gitlabPid 做大小写不敏感的精确匹配。用于列表视图缺组时逐项目确认。
+ */
+export function matchAppByRepoPath(rows, repositoryPath) {
+  const want = String(repositoryPath || '').toLowerCase();
+  for (const app of rows || []) {
+    if (app && app.gitlabPid && String(app.gitlabPid).toLowerCase() === want) {
+      return {
+        appId: `${app.namespace}/${app.name}`,
+        gitlabPid: app.gitlabPid,
+        probed: true,
+      };
+    }
+  }
+  return null;
+}
+
+async function probeMedusaApp(args, cookie, repositoryPath) {
+  const parts = String(repositoryPath || '').split('/');
+  const namespace = parts.shift();
+  const appName = parts.join('/');
+  if (!namespace || !appName) return null;
+  try {
+    const data = await medusaGql(args, cookie, APPS_PROBE_QUERY, {
+      page: 1,
+      itemsPerPage: 100,
+      namespace,
+      appName,
+    });
+    return matchAppByRepoPath(data.apps || [], repositoryPath);
+  } catch {
+    return null; // 兜底失败不阻断，维持 tags 口径
+  }
 }
 
 async function fetchDeployHistory(args, cookie, appId) {
@@ -454,6 +529,7 @@ async function collectCandidates(args, gitlab, project, medusaApp, cookie, warni
         jira: row.jiraID || '',
         taskId: row.id,
         status: row.status,
+        operator: row.operator || '',
         releaseState: releaseState(row.status),
         createdAt: row.createdAt,
       });
@@ -497,6 +573,7 @@ async function collectCandidates(args, gitlab, project, medusaApp, cookie, warni
       jira: extractJira(tag.name),
       taskId: '',
       status: 'online-tag',
+      operator: '',
       releaseState: 'done',
       createdAt: tag.commit.created_at || tag.commit.committed_date || '',
       // 非美杜莎仓库没有部署任务事件可查，发布段不适用
@@ -569,6 +646,36 @@ function buildDescription({ project, source, target, tag, jira, taskId, origin, 
   return lines.join('\n');
 }
 
+/**
+ * 等 MR 变成可合并状态（读类检查仍走 REST，与旧通道保持一致）。
+ * `--wait-pipeline` 时把流水线未完成视为暂态继续等。
+ */
+async function waitMergeable(gitlab, repo, iid, { url = '', waitPipeline, timeoutMinutes, pollMs, label = '' }) {
+  const deadline = Date.now() + timeoutMinutes * 60 * 1000;
+  const blocked = ['need_rebase', 'not_approved', 'blocked_status', 'not_open'];
+  const where = url ? `：${url}` : '';
+  let last = '';
+  for (;;) {
+    const detail = await gitlab.getMR(repo, iid);
+    const state = detail.detailed_merge_status || detail.merge_status || '';
+    if (state !== last) {
+      last = state;
+      log(`  ${label}: MR !${iid} 合并状态 ${state || '-'}`);
+    }
+    if (detail.has_conflicts || ['conflict', 'cannot_be_merged'].includes(state)) {
+      throw new SkillError(`MR !${iid} 有冲突${where}`, 'MR_CONFLICT');
+    }
+    if (['mergeable', 'can_be_merged'].includes(state)) return state;
+    if (blocked.includes(state) || (state === 'ci_must_pass' && !waitPipeline)) {
+      throw new SkillError(`MR !${iid} 不可合并：${state}${where}`, 'MR_NOT_MERGEABLE');
+    }
+    if (Date.now() > deadline) {
+      throw new SkillError(`等 MR !${iid} 可合并超时（最后状态 ${state || '-'}）`, 'MR_TIMEOUT');
+    }
+    await sleep(pollMs);
+  }
+}
+
 async function patrolProject(ctx, project) {
   const { args, gitlab, medusaApps, cookie } = ctx;
   const warnings = [];
@@ -582,7 +689,15 @@ async function patrolProject(ctx, project) {
     status: 'ok',
   };
 
-  const medusaApp = medusaApps.get(project.repository_path.toLowerCase()) || null;
+  let medusaApp = medusaApps.get(project.repository_path.toLowerCase()) || null;
+  if (!medusaApp) {
+    // 列表没命中不直接判「非美杜莎」：先定向兜底一次，防账号列表视图缺组（2026-11-03 GZF-300 诊断）
+    medusaApp = await probeMedusaApp(args, cookie, project.repository_path);
+    if (medusaApp) {
+      result.probed = true;
+      log(`  ${project.project_title}：应用列表未命中，定向探测确认是美杜莎应用（${medusaApp.gitlabPid}）`);
+    }
+  }
   result.kind = medusaApp ? 'medusa' : 'tags';
 
   const target = await resolveTarget(gitlab, project, medusaApp, args.target);
@@ -742,17 +857,26 @@ async function patrolProject(ctx, project) {
           return { action: 'continue' };
         },
 
-        /** 强制检查：源分支任意 opened MR（含 Draft，不区分目标分支） */
+        /** 源分支已有 opened MR：同目标且非 Draft → 复用交给 write 合并；Draft / 异目标 → 仍只上报 */
         'opened-mr': async (c) => {
           const openedMrs = sortMrsById(
             (await gitlab.findOpenedMRs(c.project.repository_path, c.source)) || [],
           );
           if (!openedMrs.length) return { action: 'continue' };
-          const hit = openedMrs[0];
+          const { reuse, blockers } = decideOpenedMrs(openedMrs, c.target);
+          if (reuse) {
+            c.reuseMr = reuse;
+            log(`  ${c.project.project_title}: 源分支已有 opened MR !${reuse.iid}（目标 ${c.target}，非 Draft），复用并合并`);
+            if (blockers.length) {
+              log(`  ${c.project.project_title}: 其余 opened MR 不动：${blockers.map((mr) => `!${mr.iid}`).join('、')}`);
+            }
+            return { action: 'continue' };
+          }
+          const hit = blockers[0];
           return {
             action: 'bail',
             code: 'OPENED_MR_EXISTS',
-            message: `按要求不自动合并：源分支 ${c.source} 存在 opened MR !${hit.iid}（${hit.web_url}，目标 ${hit.target_branch || '-'}${hit.draft ? '，Draft' : ''}）`,
+            message: `按要求不自动合并：源分支 ${c.source} 的 opened MR !${hit.iid}（${hit.web_url}，目标 ${hit.target_branch || '-'}${hit.draft ? '，Draft' : ''}）不可复用（只自动合并目标相同且非 Draft 的 MR），请人工处理`,
             mr: hit.iid,
             url: hit.web_url,
           };
@@ -795,8 +919,17 @@ async function patrolProject(ctx, project) {
           c.event.commits = c.commits.length;
 
           if (args.dryRun) {
-            c.event.status = 'would-create-mr';
-            c.event.title = title;
+            if (c.reuseMr) {
+              c.event.status = 'would-merge-mr';
+              c.event.mr = c.reuseMr.iid;
+              c.event.url = c.reuseMr.web_url;
+              c.event.detail = `复用已有 opened MR !${c.reuseMr.iid}（目标 ${c.target}，非 Draft）并合并`;
+            } else {
+              c.event.status = 'would-create-mr';
+              c.event.title = title;
+            }
+            c.event.mrBackend = args.mrBackend;
+            c.event.asUser = args.noAsUser ? '' : args.asUser || c.candidate.operator || '';
             return { action: 'done' };
           }
 
@@ -808,50 +941,88 @@ async function patrolProject(ctx, project) {
             };
           }
 
-          const mr = await gitlab.createMR(c.project.repository_path, {
-            source_branch: c.source,
-            target_branch: c.target,
-            title,
-            description,
-            remove_source_branch: false,
-          });
-          log(`  ${c.project.project_title}: 已创建 MR !${mr.iid} ${c.source} → ${c.target}`);
-          c.event.mr = mr.iid;
-          c.event.url = mr.web_url;
+          let iid;
+          let url;
+          let projectBindingId = '';
+          let asUser = '';
+          let headSha = '';
+          if (args.mrBackend !== 'gitlab') {
+            const branchInfo = await gitlab.branch(c.project.repository_path, c.source);
+            headSha = (branchInfo && branchInfo.commit && branchInfo.commit.id) || c.candidate.sha;
+            projectBindingId = c.outer.multica.resolveProjectBinding(c.project.repository_path);
+            const account = c.outer.multica.resolveAccount({
+              explicit: args.asUser,
+              noAsUser: args.noAsUser,
+              owner: c.candidate.operator,
+            });
+            asUser = account.asUser;
+            c.event.asUser = account.asUser;
+            c.event.asUserLabel = account.label;
+            log(`  ${c.project.project_title}: MR 账号 ${account.label}；绑定 ${projectBindingId}`);
+          }
+          if (c.reuseMr) {
+            iid = c.reuseMr.iid;
+            url = c.reuseMr.web_url;
+            c.event.reused = true;
+            log(`  ${c.project.project_title}: 复用已有 opened MR !${iid} ${c.source} → ${c.target}`);
+          } else if (args.mrBackend === 'gitlab') {
+            const mr = await gitlab.createMR(c.project.repository_path, {
+              source_branch: c.source,
+              target_branch: c.target,
+              title,
+              description,
+              remove_source_branch: false,
+            });
+            iid = mr.iid;
+            url = mr.web_url;
+            log(`  ${c.project.project_title}: 已创建 MR !${iid} ${c.source} → ${c.target}`);
+          } else {
+            const mr = c.outer.multica.ensureMR({
+              projectBindingId,
+              asUser,
+              source: c.source,
+              target: c.target,
+              headSha,
+              title,
+              description,
+            });
+            iid = mr.iid;
+            url = mr.url;
+            log(`  ${c.project.project_title}: 已确保 MR !${iid} ${c.source} → ${c.target}`);
+          }
+          c.event.mr = iid;
+          c.event.url = url;
 
           if (!args.merge) {
-            c.event.status = 'created';
+            c.event.status = c.reuseMr ? 'reused' : 'created';
             return { action: 'done' };
           }
 
-          const deadline = Date.now() + args.timeoutMinutes * 60 * 1000;
-          let last = '';
-          for (;;) {
-            const detail = await gitlab.getMR(c.project.repository_path, mr.iid);
-            const state = detail.detailed_merge_status || detail.merge_status || '';
-            if (state !== last) {
-              last = state;
-              log(`  ${c.project.project_title}: MR !${mr.iid} 合并状态 ${state || '-'}`);
-            }
-            if (detail.has_conflicts || ['conflict', 'cannot_be_merged'].includes(state)) {
-              throw new SkillError(`MR !${mr.iid} 有冲突：${mr.web_url}`, 'MR_CONFLICT');
-            }
-            if (['mergeable', 'can_be_merged'].includes(state)) break;
-            if (['need_rebase', 'not_approved', 'blocked_status', 'ci_must_pass', 'not_open'].includes(state)) {
-              throw new SkillError(`MR !${mr.iid} 不可合并：${state}（${mr.web_url}）`, 'MR_NOT_MERGEABLE');
-            }
-            if (Date.now() > deadline) {
-              throw new SkillError(`等 MR !${mr.iid} 可合并超时（最后状态 ${state || '-'}）`, 'MR_TIMEOUT');
-            }
-            await sleep(args.pollMs);
-          }
+          await waitMergeable(gitlab, c.project.repository_path, iid, {
+            url,
+            waitPipeline: args.waitPipeline,
+            timeoutMinutes: args.timeoutMinutes,
+            pollMs: args.pollMs,
+            label: c.project.project_title,
+          });
 
           c.outer.mergeCount += 1;
-          const merged = await gitlab.mergeMR(c.project.repository_path, mr.iid, {
-            merge_when_pipeline_succeeds: args.waitPipeline ? 'true' : 'false',
-          });
-          c.event.status = 'merged';
-          c.event.state = (merged && merged.state) || 'merged';
+          if (args.mrBackend === 'gitlab') {
+            const merged = await gitlab.mergeMR(c.project.repository_path, iid, {
+              merge_when_pipeline_succeeds: args.waitPipeline ? 'true' : 'false',
+            });
+            c.event.status = 'merged';
+            c.event.state = (merged && merged.state) || 'merged';
+          } else {
+            const merged = c.outer.multica.mergeMR({
+              projectBindingId,
+              asUser,
+              iid,
+              headSha,
+            });
+            c.event.status = 'merged';
+            c.event.state = merged.state || 'merged';
+          }
           return { action: 'done' };
         },
       };
@@ -979,12 +1150,20 @@ export async function main(argv) {
   let medusaApps = new Map();
   try {
     medusaApps = await fetchMedusaApps(args, guaziCookie);
-    log(`美杜莎应用：${medusaApps.size} 个（能对上的项目走发布记录，其余走 tag）`);
+    log(`美杜莎应用：${medusaApps.size} 个（翻页取全量；能对上的项目走发布记录，未命中的先定向探测，其余走 tag）`);
   } catch (error) {
     log(`提示：拿不到美杜莎应用列表（${error.message}），全部项目按 tag 巡查`);
   }
 
-  const ctx = { args, gitlab, medusaApps, cookie: guaziCookie, mergeCount: 0 };
+  const ctx = {
+    args,
+    gitlab,
+    medusaApps,
+    cookie: guaziCookie,
+    mergeCount: 0,
+    // 写入默认走 multica；dry-run 不会调用任何 multica 命令
+    multica: args.mrBackend === 'multica' ? createMulticaGitlab({ log }) : null,
+  };
   // 写入模式固定串行：--max-merges 的取舍依赖执行顺序，并发会让重复运行合并到不同项目。
   const concurrency = args.enableWrites ? 1 : args.concurrency;
   const results = await mapLimit(projects, concurrency, async (project) => {

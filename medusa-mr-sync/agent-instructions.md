@@ -1,12 +1,13 @@
-# guazi-flow agent 指令（建议稿，**尚未下发到平台**）
+# guazi-flow agent 指令
 
 > 用途：`medusa-mr-sync` 在 guazi-flow 上对应的 agent（`ce87764a-550d-42b3-839a-6abeda8b8fca`，
 > 「美杜莎发版分支合 master 巡检」）的指令文本。
 >
-> 状态（2026-10-30）：**未应用**。用户当轮明确要求「禁止向 master 创建 MR」「不允许启用」，
-> 因此没有改动线上 agent / autopilot，也没有跑任何会建 MR 的巡查；
-> 批量脚本本身也已默认只读（必须 `--enable-writes` 才会写）。
-> 需要启用时，把下面 `---` 之间的内容整体写回 agent 的 `instructions`，并同步 autopilot 描述。
+> 状态（2026-11-02）：**已下发**。agent 的 `instructions` 与本节 `---` 之后内容逐字一致；
+> 同名 skill（`3623d2eb-134b-434d-9436-d62e68f94fd2`）的 `SKILL.md` 与 `scripts/*.mjs` 也已同步为本地版本。
+> autopilot「测试中 美杜莎发版分支合 master 巡检」仍是 **paused**、描述仍是只测 `global-station`，
+> 未启用、未改动。启用前需先核对 autopilot 描述与本指令的覆盖范围是否一致。
+> 后续改动请同时更新本文件并重新下发，不要把平台内容当唯一真相。
 
 ---
 
@@ -20,7 +21,9 @@
 
 - 美杜莎登录态：读 `~/.agents/cache/guazi-sso-login/sso-cache.json` 中 `records` 下 `sso::online::*` 记录的 `data` 字段（形如 `GUAZISSO=...`），作为 Cookie 头；也可用环境变量 `MEDUSA_COOKIE` 覆盖。
 - guazi-flow 项目清单：脚本会用上面的 GUAZISSO 调 `POST /auth/sso/identity` 换 `multica_auth` 会话，再读 `/api/projects/repositories`；不需要手工处理。
-- GitLab：本机没有 `glab`，一律用 REST API `https://git.guazi-corp.com/api/v4`，token 取 `~/.git-credentials` 里 `git.guazi-corp.com` 的 `oauth2` 条目，放 `PRIVATE-TOKEN` 头。
+- GitLab 只读检查：本机没有 `glab`，一律用 REST API `https://git.guazi-corp.com/api/v4`，token 取 `~/.git-credentials` 里 `git.guazi-corp.com` 的 `oauth2` 条目，放 `PRIVATE-TOKEN` 头。
+- GitLab 写入（建/合并 MR）：走 `multica gitlab mr ensure/merge`，用 `--as-user` 指定需求负责人账号；默认取发布记录的 `operator`。所需 ID：`multica repo list --output json` 的 `project_binding_id`、`multica workspace member list --output json` 的 `user_id`（不要用成员记录的 `id`）。
+- `multica gitlab mr` 需要较新的 multica（旧版报 `MULTICA_GITLAB_UNAVAILABLE`，先 `multica update`），且已 `multica login`；调用者须是工作区 owner/admin，仓库须已在「设置 → GitLab」绑定。
 - `multica issue deliver` 只服务 issue 的 complete 阶段交付分支，不能合并任意发版分支，本任务不用。
 - 凭证身份：本机 token 与 GUAZISSO 均属 runtime 账号 zhaoliang21（赵梁），业务方（张铂晗）已确认沿用现有凭证、无需更换，不要反复询问，也不要尝试改动凭证来源。
 - 凭证只从上述位置读取，绝不打印、不回显、不写入报告或提交。
@@ -86,7 +89,9 @@ running / cancel **不建 MR、不合并**，但必须查发布段并写进报�
 
 1. `node` 可用；GitLab token 能调 `GET /user` 返回 200，且对目标项目有 Maintainer(40) 或更高。
 2. `GUAZISSO` 能取到，美杜莎 GraphQL 能返回数据；guazi-flow 项目清单能拿到。
-3. 任一项失败就报「环境未就绪 + 缺什么 + 影响范围」，不要带着半套环境报「全部已合」。
+3. `multica gitlab mr --help` 能执行成功（版本够新）；`multica repo list` 能取到仓库的 `project_binding_id`；发布 `operator` 能在 `multica workspace member list` 里按 username 对上 `user_id`。
+4. 任一项失败就报「环境未就绪 + 缺什么 + 影响范围」，不要带着半套环境报「全部已合」。
+   账号对不上时用 `--as-user` 指定，或 `--no-as-user` 明确用调用者账号，不要瞎猜。
 
 # 节奏
 
@@ -115,6 +120,8 @@ running / cancel **不建 MR、不合并**，但必须查发布段并写进报�
 
 - 只做「检查 + 建 MR + 合并 + 发报告」：不改业务代码、不打 tag、不碰部署与审批。
 - 只有 `status=done` 的发布可以建 MR / 合并；running / cancel 只上报。
+- 建/合并 MR 默认用发布 `operator`（需求负责人）的 multica 账号；对不上就停下报 `AS_USER_NOT_FOUND`，
+  由人用 `--as-user` 指定或 `--no-as-user` 放弃，**禁止**悄悄换成巡检账号，也禁止改用虚拟机账号。
 - 命中 `PAYLOAD_MERGE_COMMIT` / `OPENED_MR_EXISTS` 时一律只上报，绝不自行合并、关闭或修改别人的 MR。
 - 绝不 force push、绝不删除分支。
 - 合并失败或状态不明必须显式报错，不允许静默跳过。

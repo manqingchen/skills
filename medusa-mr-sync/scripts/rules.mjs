@@ -49,6 +49,24 @@ export function sortMrsById(mrs) {
   });
 }
 
+/**
+ * 源分支已有 opened MR 时的处置决策（2026-11-03 起按用户要求：复用并自动合并）：
+ * - 目标分支相同且非 Draft 的 opened MR → 复用，交给 write 直接合并
+ *   （GitLab 同源同目标最多一条 opened，取 iid 最小保证确定性）；
+ * - Draft 或目标分支不同的 opened MR → 仍只上报 OPENED_MR_EXISTS，
+ *   不替人合并未准备好的 MR、也不合并去往别的分支的 MR。
+ * blockers 是除复用条以外的全部 opened MR（含同目标但多余条目，理论上不会出现）。
+ */
+export function decideOpenedMrs(openedMrs, target) {
+  const rows = sortMrsById(openedMrs || []);
+  const reusable = rows.filter(
+    (mr) => mr && !mr.draft && String(mr.target_branch || '') === String(target),
+  );
+  const reuse = reusable[0] || null;
+  const blockers = rows.filter((mr) => mr !== reuse);
+  return { reuse, blockers };
+}
+
 /* ------------------------------ 分支过滤 ------------------------------ */
 
 /**

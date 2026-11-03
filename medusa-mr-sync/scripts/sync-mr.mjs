@@ -22,6 +22,7 @@ import {
   releaseState,
   sortByCreatedAtDesc,
   sortMrsById,
+  decideOpenedMrs,
   classifyDeployStage,
   stageLabel,
   analyzeMergeCommits,
@@ -29,6 +30,7 @@ import {
   isIntegrationBranch,
 } from './rules.mjs';
 import { runGates } from './pipeline.mjs';
+import { createMulticaGitlab, normalizeRepoPath } from './multica-mr.mjs';
 
 const DEFAULTS = {
   app: 'oversea/global-station',
@@ -38,6 +40,10 @@ const DEFAULTS = {
   pollMs: 10000,
   timeoutMinutes: 30,
   waitPipeline: false,
+  // 默认用 multica gitlab mr 建/合并；--mr-backend gitlab 可退回旧的 glab 通道
+  mrBackend: 'multica',
+  asUser: '',
+  noAsUser: false,
 };
 
 const log = (message) => process.stderr.write(`${message}\n`);
@@ -68,6 +74,8 @@ function parseArgs(argv) {
     '--poll-ms': 'pollMs',
     '--timeout-minutes': 'timeoutMinutes',
     '--title': 'title',
+    '--as-user': 'asUser',
+    '--mr-backend': 'mrBackend',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i];
@@ -77,6 +85,7 @@ function parseArgs(argv) {
       /* 兼容老写法：默认已经是真执行，这个参数不再改变行为 */
     } else if (key === '--merge') args.merge = true;
     else if (key === '--no-merge') args.merge = false;
+    else if (key === '--no-as-user') args.noAsUser = true;
     else if (key === '--wait-pipeline') args.waitPipeline = true;
     else if (valueFlags[key]) {
       if (argv[i + 1] === undefined) throw new Error(`${key} 缺少取值`);
@@ -86,6 +95,11 @@ function parseArgs(argv) {
   }
   args.pollMs = Number(args.pollMs);
   args.timeoutMinutes = Number(args.timeoutMinutes);
+  if (!['multica', 'gitlab'].includes(args.mrBackend)) {
+    throw new Error('--mr-backend 只能是 multica 或 gitlab');
+  }
+  if (args.noAsUser && args.asUser) throw new Error('--as-user 与 --no-as-user 不能同时使用');
+  if (args.mrBackend === 'gitlab' && args.asUser) throw new Error('--as-user 只适用于 --mr-backend multica');
   if (!args.jira && !args.tag && !args.branch) throw new Error('需要 --jira / --tag / --branch 之一');
   return args;
 }
@@ -427,6 +441,120 @@ function buildDescription({ source, target, tag, jira, taskId, stage }) {
   return lines.join('\n');
 }
 
+/** 当前仓库的 owner/repo（从 origin 地址里取），用于匹配 multica 的 project_binding_id */
+function repoPathFromGit() {
+  return normalizeRepoPath(git(['remote', 'get-url', 'origin'], { allowFail: true }));
+}
+
+/**
+ * 等 MR 变成可合并状态（读类检查仍走 glab / REST）。
+ * `--wait-pipeline` 时把流水线未完成视为暂态继续等，而不是立刻报不可合并。
+ */
+async function waitMergeable(iid, { url = '', waitPipeline, timeoutMinutes, pollMs }) {
+  const deadline = Date.now() + timeoutMinutes * 60 * 1000;
+  const blocked = ['need_rebase', 'not_approved', 'blocked_status', 'not_open'];
+  const where = url ? `（${url}）` : '';
+  let last = '';
+  for (;;) {
+    const detail = glab(`projects/:id/merge_requests/${iid}`);
+    // 新版本 GitLab 用 detailed_merge_status，老版本只有 merge_status，两种都认
+    const status = detail.detailed_merge_status || detail.merge_status || '';
+    if (status !== last) {
+      log(`合并状态：${status}`);
+      last = status;
+    }
+    if (detail.has_conflicts || ['conflict', 'cannot_be_merged'].includes(status)) {
+      throw new SkillError(`MR !${iid} 有冲突，需人工解决${where}`, 'MR_CONFLICT');
+    }
+    if (['mergeable', 'can_be_merged'].includes(status)) return status;
+    if (blocked.includes(status) || (status === 'ci_must_pass' && !waitPipeline)) {
+      throw new SkillError(`MR !${iid} 不可合并：${status}${where}`, 'MR_NOT_MERGEABLE');
+    }
+    // 其他暂态（含 waitPipeline 时的流水线检查）继续等，直到超时
+    if (Date.now() > deadline) {
+      throw new SkillError(`等 MR !${iid} 可合并超时（最后状态 ${status || '-'}）${where}`, 'MR_TIMEOUT');
+    }
+    await sleep(pollMs);
+  }
+}
+
+/** 旧的 glab 通道：建 MR → 等可合并 → 合并；保留给 --mr-backend gitlab */
+async function writeLegacyGlab({ source, target, title, description, merge, waitPipeline, timeoutMinutes, pollMs, reuseMr }) {
+  let mr;
+  if (reuseMr) {
+    mr = { iid: reuseMr.iid, web_url: reuseMr.web_url };
+    log(`复用已有 opened MR !${mr.iid}：${mr.web_url}`);
+  } else {
+    mr = glab('projects/:id/merge_requests', {
+      method: 'POST',
+      fields: {
+        source_branch: source,
+        target_branch: target,
+        title,
+        description,
+        remove_source_branch: 'false',
+      },
+    });
+    log(`已创建 MR !${mr.iid}：${mr.web_url}`);
+  }
+  if (!merge) return { outcome: reuseMr ? 'reused' : 'created', iid: mr.iid, url: mr.web_url, state: '' };
+
+  await waitMergeable(mr.iid, { url: mr.web_url, waitPipeline, timeoutMinutes, pollMs });
+  const mergedRes = glab(`projects/:id/merge_requests/${mr.iid}/merge`, {
+    method: 'PUT',
+    fields: { merge_when_pipeline_succeeds: waitPipeline ? 'true' : 'false' },
+  });
+  const state = (mergedRes && mergedRes.state) || 'merged';
+  log(`MR !${mr.iid} 状态：${state}`);
+  return { outcome: 'merged', iid: mr.iid, url: mr.web_url, state };
+}
+
+/**
+ * 新通道：`multica gitlab mr ensure/merge`，用需求负责人的账号建/合并。
+ * 读类检查（是否可合并）仍走 glab，保持与旧通道相同的失败码。
+ */
+async function writeViaMultica({
+  multica,
+  projectBindingId,
+  account,
+  source,
+  target,
+  headSha,
+  title,
+  description,
+  merge,
+  waitPipeline,
+  timeoutMinutes,
+  pollMs,
+  reuseMr,
+}) {
+  let mr;
+  if (reuseMr) {
+    mr = { iid: reuseMr.iid, url: reuseMr.web_url };
+    log(`复用已有 opened MR !${mr.iid}${mr.url ? `：${mr.url}` : ''}`);
+  } else {
+    mr = multica.ensureMR({
+      projectBindingId,
+      asUser: account.asUser,
+      source,
+      target,
+      headSha,
+      title,
+      description,
+    });
+    log(`已创建/复用 MR !${mr.iid}${mr.url ? `：${mr.url}` : ''}`);
+  }
+  if (!merge) {
+    return { outcome: reuseMr ? 'reused' : 'created', iid: mr.iid, url: mr.url, state: '', asUser: account.asUser };
+  }
+
+  await waitMergeable(mr.iid, { url: mr.url, waitPipeline, timeoutMinutes, pollMs });
+  const merged = multica.mergeMR({ projectBindingId, asUser: account.asUser, iid: mr.iid, headSha });
+  const state = merged.state || 'merged';
+  log(`MR !${mr.iid} 状态：${state}`);
+  return { outcome: 'merged', iid: mr.iid, url: mr.url, state, asUser: account.asUser };
+}
+
 (async () => {
   // 批量模式：巡查 guazi-flow inbox 里的全部项目（不需要本地仓库）
   if (process.argv.slice(2).some((item) => item === '--patrol' || item === '--all')) {
@@ -435,6 +563,8 @@ function buildDescription({ source, target, tag, jira, taskId, stage }) {
   }
   const args = parseArgs(process.argv.slice(2));
   const cookie = resolveCookie();
+  // multica 客户端只在真正写入时才会调用命令；dry-run 不会触碰
+  const multica = args.mrBackend === 'multica' ? createMulticaGitlab({ log }) : null;
 
   const rows = await fetchDeployHistory(args, cookie);
   const release = pickRelease(rows, args);
@@ -586,17 +716,26 @@ function buildDescription({ source, target, tag, jira, taskId, stage }) {
       return { action: 'continue' };
     },
 
-    /** 强制检查：源分支任意 opened MR（含 Draft，不区分目标分支） */
+    /** 源分支已有 opened MR：同目标且非 Draft → 复用交给 write 合并；Draft / 异目标 → 仍只上报 */
     'opened-mr': (c) => {
       const openedMrs = sortMrsById(
         glab(`projects/:id/merge_requests?source_branch=${encodeURIComponent(c.source)}&state=opened&per_page=20`) || [],
       );
       if (!openedMrs.length) return { action: 'continue' };
-      const hit = openedMrs[0];
+      const { reuse, blockers } = decideOpenedMrs(openedMrs, args.target);
+      if (reuse) {
+        c.reuseMr = reuse;
+        log(`源分支已有 opened MR !${reuse.iid}（目标 ${args.target}，非 Draft），复用并合并`);
+        if (blockers.length) {
+          log(`其余 opened MR 不动：${blockers.map((mr) => `!${mr.iid}`).join('、')}`);
+        }
+        return { action: 'continue' };
+      }
+      const hit = blockers[0];
       return {
         action: 'bail',
         code: 'OPENED_MR_EXISTS',
-        message: `按要求不自动合并：源分支 ${c.source} 存在 opened MR !${hit.iid}（${hit.web_url}，目标 ${hit.target_branch || '-'}${hit.draft ? '，Draft' : ''}）`,
+        message: `按要求不自动合并：源分支 ${c.source} 的 opened MR !${hit.iid}（${hit.web_url}，目标 ${hit.target_branch || '-'}${hit.draft ? '，Draft' : ''}）不可复用（只自动合并目标相同且非 Draft 的 MR），请人工处理`,
       };
     },
 
@@ -640,11 +779,17 @@ function buildDescription({ source, target, tag, jira, taskId, stage }) {
         taskId: c.release ? c.release.id : '',
         stage: c.stage,
       });
+      const releaseOwner = c.release ? c.release.operator || '' : '';
 
       if (args.dryRun) {
         log('只读模式（--dry-run）：只检查，不建 MR、不合并');
-        log(`  将新建 MR：${title}\n${description.replace(/^/gm, '    ')}`);
+        if (c.reuseMr) {
+          log(`  将复用已有 opened MR !${c.reuseMr.iid}（目标 ${args.target}，非 Draft）`);
+        } else {
+          log(`  将新建 MR：${title}\n${description.replace(/^/gm, '    ')}`);
+        }
         if (args.merge) log(`  然后合并到 ${args.target}`);
+        log(`  MR 账号：${args.noAsUser ? '调用者账号（--no-as-user）' : args.asUser || releaseOwner || '调用者账号'}`);
         return {
           action: 'done',
           outcome: 'dry-run',
@@ -660,83 +805,73 @@ function buildDescription({ source, target, tag, jira, taskId, stage }) {
             target: args.target,
             ahead: c.ahead,
             behind: c.behind,
-            title,
-            description,
+            ...(c.reuseMr ? { reuseMr: { iid: c.reuseMr.iid, url: c.reuseMr.web_url } } : { title, description }),
+            mrBackend: args.mrBackend,
+            asUser: args.noAsUser ? '' : args.asUser || releaseOwner,
           },
         };
       }
 
-      const mr = glab('projects/:id/merge_requests', {
-        method: 'POST',
-        fields: {
-          source_branch: c.source,
-          target_branch: args.target,
+      let result;
+      let accountLabel = '';
+
+      if (args.mrBackend === 'gitlab') {
+        result = await writeLegacyGlab({
+          source: c.source,
+          target: args.target,
           title,
           description,
-          remove_source_branch: 'false',
-        },
-      });
-      log(`已创建 MR !${mr.iid}：${mr.web_url}`);
-
-      if (!args.merge) {
-        return {
-          action: 'done',
-          outcome: 'created',
-          output: {
-            action: 'created',
-            iid: mr.iid,
-            url: mr.web_url,
-            deployStage: c.stage,
-            mergeStateUnknown: c.merged === null,
-            extraCommits: c.extra,
-            source: c.source,
-            target: args.target,
-          },
-        };
+          merge: args.merge,
+          waitPipeline: args.waitPipeline,
+          timeoutMinutes: args.timeoutMinutes,
+          pollMs: args.pollMs,
+          reuseMr: c.reuseMr || null,
+        });
+      } else {
+        // multica 要求 head-sha 与远端源分支一致：取分支尖端，不是发布提交
+        const headSha = git(['rev-parse', `origin/${c.source}`]);
+        const projectBindingId = multica.resolveProjectBinding(repoPathFromGit());
+        const account = multica.resolveAccount({
+          explicit: args.asUser,
+          noAsUser: args.noAsUser,
+          owner: releaseOwner,
+        });
+        accountLabel = account.label;
+        log(`MR 账号：${account.label}；仓库绑定：${projectBindingId}`);
+        result = await writeViaMultica({
+          multica,
+          projectBindingId,
+          account,
+          source: c.source,
+          target: args.target,
+          headSha,
+          title,
+          description,
+          merge: args.merge,
+          waitPipeline: args.waitPipeline,
+          timeoutMinutes: args.timeoutMinutes,
+          pollMs: args.pollMs,
+          reuseMr: c.reuseMr || null,
+        });
       }
 
-      const deadline = Date.now() + args.timeoutMinutes * 60 * 1000;
-      let last = '';
-      for (;;) {
-        const detail = glab(`projects/:id/merge_requests/${mr.iid}`);
-        // 新版本 GitLab 用 detailed_merge_status，老版本只有 merge_status，两种都认
-        const status = detail.detailed_merge_status || detail.merge_status || '';
-        if (status !== last) {
-          log(`合并状态：${status}`);
-          last = status;
-        }
-        if (detail.has_conflicts || ['conflict', 'cannot_be_merged'].includes(status)) {
-          throw new SkillError(`MR !${mr.iid} 有冲突，需人工解决：${mr.web_url}`, 'MR_CONFLICT');
-        }
-        if (['mergeable', 'can_be_merged'].includes(status)) break;
-        if (['need_rebase', 'not_approved', 'blocked_status', 'ci_must_pass', 'not_open'].includes(status)) {
-          throw new SkillError(`MR !${mr.iid} 不可合并：${status}（${mr.web_url}）`, 'MR_NOT_MERGEABLE');
-        }
-        if (Date.now() > deadline) {
-          throw new SkillError(`等 MR !${mr.iid} 可合并超时（最后状态 ${status || '-'}）`, 'MR_TIMEOUT');
-        }
-        await sleep(args.pollMs);
-      }
-
-      const mergedRes = glab(`projects/:id/merge_requests/${mr.iid}/merge`, {
-        method: 'PUT',
-        fields: { merge_when_pipeline_succeeds: args.waitPipeline ? 'true' : 'false' },
-      });
-      const state = (mergedRes && mergedRes.state) || 'merged';
-      log(`MR !${mr.iid} 状态：${state}`);
       return {
         action: 'done',
-        outcome: 'merged',
+        outcome: result.outcome,
         output: {
-          action: 'merged',
-          iid: mr.iid,
-          url: mr.web_url,
-          state,
+          action: result.outcome,
+          iid: result.iid,
+          url: result.url,
+          ...(result.state ? { state: result.state } : {}),
           deployStage: c.stage,
           mergeStateUnknown: c.merged === null,
           extraCommits: c.extra,
           source: c.source,
           target: args.target,
+          mrBackend: args.mrBackend,
+          // 旧通道用 token 账号，不代表 operator
+          asUser: args.mrBackend === 'gitlab' ? '' : result.asUser || (args.noAsUser ? '' : args.asUser || releaseOwner),
+          ...(accountLabel ? { asUserLabel: accountLabel } : {}),
         },
       };
     },
