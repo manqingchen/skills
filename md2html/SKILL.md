@@ -1,11 +1,13 @@
 ---
 name: md2html
-description: 把 Markdown 笔记/长文一键转成 eli5 风格的自包含单文件 HTML(左侧目录+滚动高亮、暗/亮双主题暖色、zenburn 代码高亮、零外部依赖)。当用户说「md 转 html」「笔记转网页」「转成 html」「单文件 html」「html 版」「md2html」,或要给一份 .md 配好看可分享的网页版时使用。纯渲染不删内容:表格/脚注/任务列表/代码高亮/图片全保留。
+description: 把 Markdown 笔记/长文一键转成米白纸感文档风的单文件 HTML(左侧目录+滚动高亮、暗/亮双主题、深色代码块 zenburn 高亮、零外部依赖)。当用户说「md 转 html」「笔记转网页」「转成 html」「单文件 html」「html 版」「md2html」,或要给一份 .md 配好看可分享的网页版时使用。纯渲染不删内容:表格/脚注/任务列表/代码高亮/图片全保留。
 ---
 
-# md2html:Markdown → eli5 风格单文件 HTML
+# md2html:Markdown → 文档风单文件 HTML
 
-一条命令把 .md 转成自包含 HTML:左侧锚点目录 + 滚动高亮、暗/亮切换(0.5s 渐变防晃眼)、暖色低亮度配色、代码深色块 zenburn 高亮、系统字体栈、零外部依赖(样式全内联)。与 eli5 技能产出的学习笔记 HTML 同一套视觉体系。
+一条命令把 .md 转成自包含 HTML:左侧锚点目录 + 滚动高亮、暗/亮切换(暗→亮 1.8s 慢过渡防闪)、Solarized 纸色亮色 + Nord 深石板暗色、章节序号、深色代码块(zenburn 高亮 + 一键复制)、表格横向滚动、任务列表、脚注、系统字体栈、零外部依赖(样式全内联)。
+
+视觉体系改编自 [haidang1810/md2html](https://github.com/haidang1810/md2html)(MIT),排版管线仍是 pandoc。配色取 [Solarized](https://ethanschoonover.com/solarized/) 亮色与 [Nord](https://www.nordtheme.com/) 暗色,按长时间阅读的可读性微调过对比度。
 
 ## 用法
 
@@ -40,9 +42,12 @@ YAML front-matter 会被自动读取并从正文剥离:`title` `subtitle` `kicke
 
 1. **纯渲染流水线**:禁止为了排版删改 MD 内容;排版不对改 `template.html`,不动内容。
 2. **转换后抽查再交付**:对比 MD 与 HTML 的 h2 数、表格行数、代码块数,对得上才算完成。
-3. **h2 自动编号**:模板用 CSS counter 给每个 h2 加 `01/02` 徽章;若 MD 的 h2 自带「1.」序号,脚本自动关闭徽章。
-4. 改主题色/字体 → 改 `template.html` 顶部 `:root` 的 CSS 变量;亮暗两套都在那里。
+3. **h2 自动编号**:模板用 CSS counter 在每个 h2 上方给出小号章节序号(`01/02`);若 MD 的 h2 自带「1.」序号,脚本自动关闭编号。
+4. 改主题色/字体 → 改 `template.html` 顶部 `:root`(亮色=Solarized)与 `[data-theme="dark"]`(暗色=Nord)的 CSS 变量,两套都在那里。亮色正文对比度约 5:1、暗色约 9:1,别往 15:1 以上调(会刺眼)。
+5. 模板里带 `/* ===== PANDOC ADAPTER (md2html) ===== */` 注释的段落是本仓库新增的适配层(目录拍平、表格滚动、任务列表、章节序号、代码块配色),改样式优先动这一层,不要动上游样式主体。
 
 ## 模板结构(维护用)
 
 `template.html` 是 pandoc 模板:`$body$` 正文、`$table-of-contents$` 目录(需外包 nav)、`title/kicker/subtitle/source/date` 元数据变量、`secnum_off` 开关、`mathjax` 开关。模板内的 JS 不用模板字符串(避免 `${}` 与 pandoc 语法冲突)。
+
+页面级交互都在模板内联 JS 里,不依赖外部脚本:目录拍平(`#TOC` 嵌套 UL → 单列 `a.lvl-3`)、滚动高亮、移动端抽屉、复制按钮、表格横向滚动容器、章节锚点、mermaid(CDN,离线退化为源码)。
