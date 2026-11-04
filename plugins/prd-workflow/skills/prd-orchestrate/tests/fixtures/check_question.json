@@ -1,0 +1,12 @@
+{
+  "result": {
+    "messages": [
+      {
+        "id": "m-2",
+        "type": "question",
+        "dispatchId": "d-1",
+        "question": "A2 依赖后端口径，先用 mock 可以吗？"
+      }
+    ]
+  }
+}

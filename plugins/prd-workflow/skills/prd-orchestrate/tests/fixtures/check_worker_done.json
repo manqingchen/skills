@@ -1,0 +1,12 @@
+{
+  "result": {
+    "messages": [
+      {
+        "id": "m-1",
+        "type": "worker_done",
+        "dispatchId": "d-1",
+        "outcome": "succeeded"
+      }
+    ]
+  }
+}
