@@ -1840,15 +1840,16 @@ def validate_jira(conn, jira, root=None):
             comp = conn.execute('SELECT 1 FROM completions WHERE jira=? AND task_id=?', (jira, t)).fetchone()
             if not comp:
                 errors.append(f'{t} 标记完成但没有完成记录')
+            # 验收结果是台账,不是结构约束：不通过只提示,不阻断（验收本身可选,见 SKILL 落库分档）
             failed = conn.execute("SELECT COUNT(*) c FROM acceptance WHERE jira=? AND task_id=? AND result != 'pass'",
                                   (jira, t)).fetchone()['c']
             if failed:
-                errors.append(f'{t} 标记完成但仍有 {failed} 条验收未通过（结果非 pass）')
+                warnings.append(f'{t} 标记完成但仍有 {failed} 条验收未回写 pass（台账未收尾）')
         if status == 'blocked':
             notes = conn.execute('SELECT notes FROM tasks WHERE jira=? AND id=?', (jira, t)).fetchone()['notes']
             if not notes:
                 warnings.append(f'{t} 阻塞但没有写原因(notes)')
-    # 文件路径存在性
+    # 文件登记：台账,只提示。文件清单可由 git diff 反推,不作为一致性硬约束
     if root:
         root_path = Path(root).expanduser()
         # 同一 Jira 内被其它任务登记为 add 的路径集合：这些文件按计划顺序会先被创建
@@ -1857,11 +1858,11 @@ def validate_jira(conn, jira, root=None):
         for f in conn.execute('SELECT * FROM task_files WHERE jira=?', (jira,)):
             target = root_path / f['path']
             if f['change'] == 'add' and target.exists():
-                errors.append(f"{f['task_id']} 标记新增但文件已存在: {f['path']}")
+                warnings.append(f"{f['task_id']} 登记为新增但文件已存在: {f['path']}（台账过期，可 task file 更新或忽略）")
             if f['change'] in ('modify', 'delete') and not target.exists():
                 if f['path'] in planned:
-                    continue  # 由本 Jira 另一张卡创建，属合法的前置引用，不算过期
-                errors.append(f"{f['task_id']} 标记{f['change']}但文件不存在: {f['path']}")
+                    continue  # 由本 Jira 另一张卡创建，属合法的前置引用
+                warnings.append(f"{f['task_id']} 登记为{f['change']}但文件不存在: {f['path']}（台账过期，可忽略）")
     # 设计锚点路径
     for d in conn.execute('SELECT * FROM design_drafts WHERE jira=?', (jira,)):
         if not Path(d['path']).expanduser().exists():

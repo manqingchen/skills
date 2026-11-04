@@ -20,7 +20,7 @@ PTB="$PLUGIN_ROOT/scripts/ptb.py"
 1. **一次一条任务**，除非用户明确要求「连续做 / 全部做完」。
 2. **开工 Gate 全过才动手**；任何一项不通过就停下来处理，不带着问题开始。
 3. **记录与仓库冲突时，改记录或问用户**，不在实现里就地偏离后不记录。
-4. **不扩范围**：只改任务 `files` 里列出的路径；清单外的改动先说明理由并登记。
+4. **不扩范围**：只改任务声明的范围（`files` 清单 / `implementation` 描述 / 结构设计）；范围外的改动先说明理由，需要时补登记。
 5. **验收逐条执行**，不许口头通过；`complete` 会被 CLI 拦住未通过的验收。
 6. **UI 改动必须走 ui-restore**，禁止凭记忆或组件默认样式还原。
 7. **不回写视为没做完**：完成记录、验收结果、状态三者缺一不可。
@@ -62,7 +62,7 @@ python3 "$PTB" doctor --jira <JIRA> --root <项目根>  # 库内进度 vs 仓库
 | 状态 | `todo` 或 `doing` | `done` → 报告已完成，不重做；`blocked` → 先问阻塞是否解除；`doing` → 上次中断，先 `log` + `doctor` 恢复现场 |
 | 依赖 | 所有 `depends_on` 均 `done` | 报告被谁卡住，不硬上 |
 | 库校验 | `validate` 无错误 | 错误属于记录问题 → 先修记录（`task text`/`file add`/`acc add`）；属于他人任务 → 报告 |
-| 文件现状 | `add` 的路径不存在；`modify/delete` 的路径存在；`files` 清单跑过 `codegraph impact` | 记录已过期：先更新任务的文件清单并说明，再开工 |
+| 文件现状 | 登记了 `files` 时按登记核对（`add` 不存在、`modify/delete` 存在）；未登记时以 `implementation` + 结构设计为准，用 `git status` 判断现状；有清单就跑 `codegraph impact` | 登记与实际不符：以仓库实际为准，顺手更新登记再开工（文件清单是台账，不阻塞） |
 | 契约 | 契约 `status` 不是 `fixme`，或确可 mock | 未冻结 → mock 先行，禁止自造字段名；需要真契约 → 先跑 contract-align |
 | 设计锚点 | 有 `design_ref` | 任务含 UI 改动但无锚点 → 停下来问用户要设计稿或确认「沿用现有组件」 |
 | 基线约束 | `jiras.baseline` 逐条仍适用 | 与当前实现冲突 → 问用户，不自行解除 |
@@ -81,7 +81,7 @@ python3 "$PTB" start --jira <JIRA> --task <TASK> --msg "Gate 通过（依赖/契
 
 - 按 `implementation` 的步骤实现，遵守项目 `AGENTS.md` 的目录、命名、组件、样式约定；
 - **复用优先**：能通过 props/slot/className/主题适配的既有组件一律复用，不重复造；
-- 只改 `files` 列出的路径。确实需要动其他文件：先 `file add` 登记并说明，再改；
+- 只改任务声明的范围（`files` 清单 / `implementation` 描述 / 结构设计）。确实需要动其他文件：先说明并由 `file add` 登记，再改；
 - 视觉部分：调用 **ui-restore** 完整流程（解析稿 → 组件映射 → 缺口确认 → 实现 → 双宽度截图）；
   一次还原覆盖 `design_drafts.covers` 里的多条任务时，按「一稿一轮」组织，不重复解析；
 - 发现技术债或记录外的风险：写进 `task notes`（`task text --field notes`）或 `risk add`，**不动手修**；
