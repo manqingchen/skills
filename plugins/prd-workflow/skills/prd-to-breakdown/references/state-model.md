@@ -116,7 +116,7 @@ python3 "$PTB" backup                               # 手动备份（写操作�
 | `prd-find.sh` | 项目内 PRD 候选定位 | `prd-find.sh [<root>]` |
 | `survey-size.sh` | 源文件规模统计 + 调研方式建议（自己扫 / Agent 并行） | `survey-size.sh [<root>]` |
 | `evidence.sh` | codegraph 三问，输出 `symbol@file#Lx-Ly` 证据行（中文/无索引报错不降级） | `evidence.sh query\|callers\|callees\|impact <标识符> [-r root] [-n N]` |
-| `selfcheck.py` | §8 自检清单机检（只读库）：scope / 前端不处理边界 / visual→design_ref / covers 引用 / 埋点 API 匹配 / contract 标注 / 文件多卡 | `python3 selfcheck.py --jira X [--db path]` |
+| `selfcheck.py` | §8 自检清单机检（只读库）：scope / 前端不处理边界 / visual→design_ref / covers 引用 / 埋点 API 匹配 / 埋点任务写 moduleId / contract 标注 / 文件多卡 | `python3 selfcheck.py --jira X [--db path]` |
 | `task-save.sh` | `task add` 幂等版：已存在自动转 task set / task text + 幂等补挂 dep/req | `task-save.sh <task add 的全部参数>` |
 | `i18n-guard.sh` | 多语言任务固定模板补验收 + 风险 | `i18n-guard.sh --jira X --task T00X` |
 | `verbal-change.sh` | 口头口径变更固定入口：decision + risk 落库 + 追问话术 | `verbal-change.sh --jira X --desc "..." [--ref R1]` |

@@ -9,6 +9,8 @@
     - 有 kind=visual 验收的任务没有 design_ref
     - design_drafts.covers 引用了不存在的任务
     - 埋点 API 与事件类型不匹配（exposure→TrackBeseen / click→sendTrack）或缺 element/timing
+    - 埋点关联的任务不存在，或该任务实现要点没写 moduleId（PRD/数仓的 mti_module 在代码里对应 moduleId 键）
+    - kind=contract 的验收没加 --contract 标注（contract-align 回扫会漏）
   警告（台账）:
     - 同一文件路径登记在多张卡上（应只登记在创建它的任务）
 
@@ -17,6 +19,7 @@
 """
 import argparse
 import os
+import re
 import sqlite3
 import sys
 from collections import Counter
@@ -68,7 +71,8 @@ def main():
             if tid not in task_ids:
                 errors.append(f"设计稿 {d['path']} covers 引用了不存在的任务 {tid}")
 
-    # 埋点：类型→API 匹配、位置与时机写清（tracking_points 只定义一次，任务只引用）
+    # 埋点：类型→API 匹配、位置与时机写清、任务存在且实现要点写了 moduleId
+    # （tracking_points 只定义一次，任务只引用；PRD/数仓的 mti_module 在代码里是 moduleId 键）
     for t in conn.execute('SELECT * FROM tracking_points WHERE jira=?', (args.jira,)):
         api = t['api'] or ''
         if t['event'] == 'exposure' and api != 'TrackBeseen':
@@ -77,6 +81,16 @@ def main():
             errors.append(f"埋点(id={t['id']}) click 事件必须用 sendTrack，当前: {api or '空'}")
         if not t['element'] or not t['timing']:
             errors.append(f"埋点(id={t['id']}) 未写清 element/timing（挂在哪个组件、什么时机触发）")
+        if t['task_id'] and t['task_id'] not in task_ids:
+            errors.append(f"埋点(id={t['id']}) 关联的任务 {t['task_id']} 不存在")
+        elif t['task_id']:
+            row = conn.execute('SELECT implementation, goal FROM tasks WHERE jira=? AND id=?',
+                               (args.jira, t['task_id'])).fetchone()
+            text = row['implementation'] or row['goal'] or ''
+            # 按标识符边界匹配：moduleIds / xmoduleId 不算，中文紧邻的「在moduleId参数上」算（\b 会把中文当词字符，故不用 \b）
+            if not re.search(r'(?<![A-Za-z0-9_$])moduleId(?![A-Za-z0-9_$])', text):
+                errors.append(f"埋点(id={t['id']}) 关联任务 {t['task_id']} 的实现要点没写 moduleId"
+                              f"（PRD/数仓的 mti_module 在代码里对应 sendTrack/TrackBeseen 的 moduleId 参数）")
 
     # kind=contract 的验收必须带 --contract 标注（contract-align 的回扫点，漏标会扫不到）
     for a in conn.execute(

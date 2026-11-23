@@ -1,7 +1,7 @@
 {
   "name": "prd-workflow",
   "description": "需求交付工作流：PRD 拆解写入 SQLite 状态库 → 按任务执行或 Orca 并行编排并回写验收 → 验收纠正回流为技能升级。含共享 CLI 与需求原文（Demand collection）管理。",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "author": {
     "name": "zhangbohan1"
   },
