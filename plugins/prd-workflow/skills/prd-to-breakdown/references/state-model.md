@@ -102,3 +102,21 @@ python3 "$PTB" backup                               # 手动备份（写操作�
 
 - `PTB_DB`：库路径（默认 `~/.prd-to-breakdown/prd.db`）
 - `PTB_BACKUP_DIR`：备份目录（默认 `~/.prd-to-breakdown/backups`）
+- `PTB_HOME`：流程脚本根目录（默认 `~/.prd-to-breakdown`，仅 `demand-fetch.sh` 用）
+- `CWIKI_SKILL_ROOT`：显式指定 cwiki-download 技能目录（仅 `demand-fetch.sh` 用；默认自动向上级探测，兜底 `~/.claude/skills/cwiki-download`）
+
+## 流程脚本（`skills/prd-to-breakdown/scripts/`）
+
+把 SKILL 流程里可机械化的步骤固化成脚本，参数与输出都是确定性的；判断类内容仍在 SKILL 正文。
+
+| 脚本 | 一句话 | 命令 |
+|---|---|---|
+| `demand-fetch.sh` | wiki 原文一键下载入库（目录判定 + cwiki-download + demand add） | `demand-fetch.sh <url\|pageId> [--jira X] [--recheck]` |
+| `stage-check.sh` | 设计稿缩放舞台检测（固定宽度画布 + CSS/JS scale），输出 design note 与 baseline 提示 | `stage-check.sh <html>` |
+| `prd-find.sh` | 项目内 PRD 候选定位 | `prd-find.sh [<root>]` |
+| `survey-size.sh` | 源文件规模统计 + 调研方式建议（自己扫 / Agent 并行） | `survey-size.sh [<root>]` |
+| `evidence.sh` | codegraph 三问，输出 `symbol@file#Lx-Ly` 证据行（中文/无索引报错不降级） | `evidence.sh query\|callers\|callees\|impact <标识符> [-r root] [-n N]` |
+| `selfcheck.py` | §8 自检清单机检（只读库）：scope / 前端不处理边界 / visual→design_ref / covers 引用 / 埋点 API 匹配 / contract 标注 / 文件多卡 | `python3 selfcheck.py --jira X [--db path]` |
+| `task-save.sh` | `task add` 幂等版：已存在自动转 task set / task text + 幂等补挂 dep/req | `task-save.sh <task add 的全部参数>` |
+| `i18n-guard.sh` | 多语言任务固定模板补验收 + 风险 | `i18n-guard.sh --jira X --task T00X` |
+| `verbal-change.sh` | 口头口径变更固定入口：decision + risk 落库 + 追问话术 | `verbal-change.sh --jira X --desc "..." [--ref R1]` |

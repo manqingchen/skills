@@ -40,36 +40,44 @@ description: 把 PRD / 需求文档拆解成可执行的任务卡与技术方案
 
 ---
 
+## 环境引导（开工先跑一次，后文 `$PTB` / `$SCRIPTS` 均由此定义）
+
+```bash
+SKILL_DIR="$(cd "$(dirname "<本技能目录>/SKILL.md")" && pwd -P)"
+SCRIPTS="$SKILL_DIR/scripts"          # 本技能自带流程脚本（demand-fetch / evidence / selfcheck 等）
+PLUGIN_ROOT="$(cd "$SKILL_DIR/../.." && pwd -P)"
+PTB="$PLUGIN_ROOT/scripts/ptb.py"     # 状态库 CLI
+```
+
+`<本技能目录>` = 本 SKILL.md 所在目录（若是指向插件源码的软链，`pwd -P` 会解析到真实路径）；`PLUGIN_ROOT` 即 `plugins/prd-workflow/`。长文本一律用 `--xxx-file /tmp/xxx.md` 传入——`/tmp` 只是传输载体，不是产物。
+
+---
+
 ## 0. 读取 PRD
 
 从以下来源之一拿到需求：
 
 - 用户消息里直接粘贴的需求文本
 - 用户给出的文件路径（`.md` / `.docx` / `.pdf` / `.txt`），用 Read 读取
-- 项目里的 PRD 目录（常见位置：`docs/`、`doc/`、`prd/`、`需求/`、`requirements/`、`*.prd.md`）
+- 项目里的 PRD 目录：`bash "$SCRIPTS/prd-find.sh" <项目根>` 自动扫描（docs/ doc/ prd/ 需求/ requirements/ 目录 + 根下两层 `*.prd.md` / `*需求*.md`）
 - **Confluence / wiki 链接（`cwiki.guazi.com`）——不要请用户粘贴，直接下载**，见下方「0.1 Demand collection」
 - **设计稿 / 原型**（自包含单文件 HTML、Figma / 蓝湖链接、设计稿截图）——PRD 里常以附件或链接形式出现，不要只读正文
 
 ### 0.1 Demand collection：需求原文统一入库
 
-用户给出 wiki 地址时，**主动调用 cwiki-download 技能下载**，存进 `~/.prd-to-breakdown/demands/`，不再让用户手工下载或粘贴。
-
-**重拉已入库的 wiki 时，先对版本元数据再对内容**：优先比对文档里的「当前版本 / 更新时间」（或页面 `page-version`、`last-modified`），一致就直接答复「未变更」；只有元数据变了才做内容 diff。不要一上来就 diff 正文——版本没变时 diff 只会浪费一轮，还容易把格式抖动当成变更。
+用户给出 wiki 地址时，**主动调用 cwiki-download 技能下载**，存进 `~/.prd-to-breakdown/demands/`，不再让用户手工下载或粘贴。目录判定、下载、登记一条命令完成：
 
 ```bash
-# 1) 确定存放目录：已知 Jira 用 demands/<JIRA>，未知用 demands/_inbox
-DEMAND_DIR="$HOME/.prd-to-breakdown/demands/${JIRA:-_inbox}"
-mkdir -p "$DEMAND_DIR"
+# 首次下载入库：未传 --jira 落 demands/_inbox；传了落 demands/<JIRA>；同 URL 覆盖登记
+bash "$SCRIPTS/demand-fetch.sh" "<wiki URL 或 pageId>" [--jira "$JIRA"]
 
-# 2) 调 cwiki-download（SKILL_ROOT = 该技能目录；run.sh 会自行处理软链与登录态）
-CWIKI_SKILL_ROOT="$(dirname "<cwiki-download/SKILL.md 的绝对路径>")"
-bash "$CWIKI_SKILL_ROOT/run.sh" "<wiki URL 或 pageId>" --output-dir "$DEMAND_DIR"
-
-# 3) 登记到状态库（路径以实际下载结果为准）
-python3 "$PTB" demand add --url "<wiki URL>" --page-id "<pageId>" --title "<页面标题>" \
-  --path "$DEMAND_DIR/<标题>-<pageId>.md" \
-  --llm-path "$DEMAND_DIR/<标题>-<pageId>.llm.md" ${JIRA:+--jira "$JIRA"}
+# 重拉已入库的 wiki：先对文件头部「当前版本/更新时间」元数据——
+#   一致 → 输出「未变更」退出 0（不覆盖、不做内容 diff，省一轮）；
+#   不一致 → 输出 diff 摘要（前 40 行），覆盖文件并重登记
+bash "$SCRIPTS/demand-fetch.sh" "<wiki URL>" --jira "$JIRA" --recheck
 ```
+
+脚本还内置：Jira 尚未建档时先按无归属登记并提示建档后 `demand attach`；下载失败（`E_NO_COOKIE` / `E_MISSING_CREDENTIALS`）原样透传并提示引导用户初始化 `guazi-sso-login`。
 
 规则：
 
@@ -87,7 +95,7 @@ python3 "$PTB" demand add --url "<wiki URL>" --page-id "<pageId>" --title "<页�
 - 需求含 UI 改动（新增/调整页面、组件视觉）时，先确认设计稿位置，**用 `ptb design add` 登记（路径 + 覆盖的任务）**，并在任务的 `design_ref` 里标注对应区块。
 - **没有设计稿**：按顶部铁律提问索取。用户明确说「没有设计稿」后才可继续，此时用 `decision add` 记「无设计稿，视觉以项目现有组件为准」，而不是留空。
 - **一份设计稿可能覆盖多张任务卡**：登记时写清覆盖关系（例如「列表页设计稿 → T001/T003/T004/T005」），执行阶段按「一份稿一轮」组织还原，而不是每张卡各跑一遍。
-- **登记时判断设计稿是否为「缩放舞台」**：自包含 HTML 里若有固定宽度画布（如 `2048px` 的 `.stage`）+ JS `transform:scale()`，它的一切绝对像素都是舞台坐标，不能直接落地。把舞台宽与渲染比例写进 `design add` 的 note，并在 `jiras.baseline` 提示「落地尺寸需按参照物比值换算」。这一条是给执行侧（ui-restore）的输入，拆解阶段不换算、只传递。
+- **登记时判断设计稿是否为「缩放舞台」**：跑 `bash "$SCRIPTS/stage-check.sh" <设计稿HTML>` 自动判定——固定宽度画布 + `transform:scale` 应用（覆盖 CSS 字面量与 JS `style.transform` / `clientWidth` 比值形态）。命中时它的一切绝对像素都是舞台坐标、不能直接落地，脚本直接输出可粘贴的 `design add --note`（舞台宽 + 渲染比例 + 舞台坐标声明）与 `jiras.baseline` 提示句（「落地尺寸需按参照物比值换算」）。这一条是给执行侧（ui-restore）的输入，拆解阶段不换算、只传递。
 
 拿到后先做三件事，都要在回复里简短说明：
 
@@ -135,7 +143,7 @@ python3 "$PTB" demand add --url "<wiki URL>" --page-id "<pageId>" --title "<页�
 
 ### 记录范围
 
-确认后，把结论写进 `jiras.scope`，并在后续对话中始终按此范围产出。用户中途改范围（例如「后端也一起拆了吧」）时，回到第 3 步重做职责切分表，再补出另一端的任务卡——不要只在原文档上追加，那会导致两端口径不一致。
+确认后，把结论写进 `jiras.scope`（`python3 "$PTB" jira set --jira <JIRA> --scope frontend|backend|both`；漏写会被 `selfcheck.py` 报错），并在后续对话中始终按此范围产出。用户中途改范围（例如「后端也一起拆了吧」）时，回到第 3 步重做职责切分表，再补出另一端的任务卡——不要只在原文档上追加，那会导致两端口径不一致。
 
 ---
 
@@ -147,10 +155,14 @@ python3 "$PTB" demand add --url "<wiki URL>" --page-id "<pageId>" --title "<页�
 
 ### 调研方式
 
-先判断项目规模：
+先用脚本判定项目规模（统计源文件数并给出调研方式建议）：
 
-- **小项目（< 约 50 个源文件）**：直接自己用 Glob / Grep / Read 扫。
-- **中大型项目**：用 Agent 工具并行派发（各 agent 一个主题，互不重叠），典型分工——A 整体架构（技术栈/目录/构建/依赖）、B 相关业务模块（同类功能与代码位置）、C 数据层（模型/表/迁移/ORM）、D 接口层（路由/鉴权/请求响应约定/错误码）。派发时要求 **只回结论 + 路径 + 关键代码位置**，不要回大段原文。
+```bash
+bash "$SCRIPTS/survey-size.sh" <项目根>
+```
+
+- **小项目（< 50 个源文件，脚本直接提示）**：直接自己用 Glob / Grep / Read 扫。
+- **中大型项目（≥ 50，脚本会打出 A/B/C/D 分工模板）**：用 Agent 工具并行派发（各 agent 一个主题，互不重叠），典型分工——A 整体架构（技术栈/目录/构建/依赖）、B 相关业务模块（同类功能与代码位置）、C 数据层（模型/表/迁移/ORM）、D 接口层（路由/鉴权/请求响应约定/错误码）。派发时要求 **只回结论 + 路径 + 关键代码位置**，不要回大段原文。
 
 ### 必须搞清楚的七件事
 
@@ -178,19 +190,27 @@ python3 "$PTB" index show  --root <项目根> --module components/layout   # 单
 
 **git worktree 场景**：每个 worktree 是独立目录、索引不共享。建完 worktree 可先预热——`python3 "$PTB" index ensure --root <新 worktree> --background` 立即返回，日志在 `~/.prd-to-breakdown/index/<slug>/ensure.log`。**不要用软链共享 `.codegraph`**：codegraph 是单写者模型，两个 worktree 并行会把符号刷成对方分支的内容。
 
-- **codegraph 三问**：`query <英文标识符>` 盘点同类实现 → `callers` / `callees <符号>` 看依赖方向与消费方 → `impact <符号>` 看改动波及面；
+- **codegraph 三问**（`evidence.sh` 已包掉 `--json` 解析，输出即 `symbol@file#Lx-Ly` 证据行；查询词含中文会报错、无索引会报错并提示先 `index ensure`，不静默降级）：
+
+  ```bash
+  bash "$SCRIPTS/evidence.sh query   priceDropBadge -r <项目根> -n 5    # 盘点同类实现
+  bash "$SCRIPTS/evidence.sh callers PriceDropBadgeProvider -r <项目根>  # 谁在调用它（依赖方向与消费方）
+  bash "$SCRIPTS/evidence.sh callees <符号> -r <项目根>                  # 它调用了谁（模块职责分布）
+  bash "$SCRIPTS/evidence.sh impact  <符号> -r <项目根>                  # 改动波及面
+  ```
+
 - **ast-grep 七类约定**：`provider-definition`（状态放在哪些 Provider）、`hook-export`（有哪些可复用 hook）、`http-request`（请求是否收口在 service）、`storage-access`、`i18n-usage`、`timer-schedule`（轮询/延时）、`event-bus`（静态图断链处，必须人工配对发布与订阅）。
 
 四条硬约束：
 
 - **先英文化再查**：两个引擎都做词法/结构匹配，不做中文语义匹配（中文查询实测返回 0 条）。把 PRD 概念翻成标识符（降价角标 → `priceDropBadge` / `collectReminder`）再查，用过的关键词记进 brief；
-- **只信 `--json`**：codegraph 符号不存在、仓库未初始化都返回退出码 0，彩色文本判不出真假；
-- **结论写成 `symbol@file#Lx-Ly` 或 `rule:<规则名>@file#Lx-Ly`**，这是 `validate` 唯一能核验的格式；
+- **只信 `--json`**：codegraph 符号不存在、仓库未初始化都返回退出码 0，彩色文本判不出真假（`evidence.sh` 已内置：非 JSON / 含中文 / 无索引都会报错）；
+- **结论写成 `symbol@file#Lx-Ly` 或 `rule:<规则名>@file#Lx-Ly`**，这是 `validate` 唯一能核验的格式（`evidence.sh` 输出即此格式）；
 - **无索引就退化 grep**，并在 brief 对应行标 `[grep 退化]`——不允许静默降级。
 
 ### 模块级分析（只分析本需求涉及的模块）
 
-1. PRD 概念 → 英文标识符，`codegraph query` / `explore` 找候选符号，按目录聚成 2~5 个候选模块；
+1. PRD 概念 → 英文标识符，`$SCRIPTS/evidence.sh query <标识符>` / `codegraph explore <主题>` 找候选符号，按目录聚成 2~5 个候选模块；
 2. 对候选模块跑 `index show --module <目录>` + `callees <符号>`，得到该模块的职责分布与跨模块依赖——一个 Provider 挂十几个 callees、横跨轮询/订阅/请求，就是「混职责」的可量化信号；
 3. 对候选模块跑 `callees` / `callers` / `impact`，确认谁在消费它、改动会波及谁；
 4. 据此写第 5 步的「结构设计」，依据优先用 `symbol@file#Lx-Ly` 与 `rule:<规则名>@file#Lx-Ly`。
@@ -249,7 +269,14 @@ python3 "$PTB" index show  --root <项目根> --module components/layout   # 单
 → 需要你确认走哪种
 ```
 
-**口头变更必须有固定入口**：用户口头口径与 PRD 冲突时（「产品刚说的」「这样改一下」），当场做三件事——`decision add` 记录变更内容与生效范围；`risk add` 按模板记「wiki 未同步，验收以本条 decision 为准」；追问一句「是否已让产品更新 wiki」。禁止只在对话里改了实现而不落记录：验收文本不可变，文档滞后时 decision 是唯一口径。
+**口头变更必须有固定入口**：用户口头口径与 PRD 冲突时（「产品刚说的」「这样改一下」），当场跑一条命令——自动 `decision add` 记录变更内容与生效范围、`risk add` 按固定模板记「wiki 未同步，验收以本条 decision 为准」，并打印追问话术「是否已让产品更新 wiki」：
+
+```bash
+bash "$SCRIPTS/verbal-change.sh" --jira "$JIRA" --ref R5 --desc "<变更内容与生效范围>" \
+  [--answer "..."] [--options "做/不做"] [--conclusion-file /tmp/c.md]
+```
+
+禁止只在对话里改了实现而不落记录：验收文本不可变，文档滞后时 decision 是唯一口径。
 
 **问题多时分批问完，不许降级**：数量多不要一次全抛。先问会**改变拆解结构**的（范围、数据模型、是否改造旧逻辑），再问产品口径类的（字段命名、埋点口径、交互取舍、频控归属、异常处理策略），分批把**所有**问题问完。判断「要不要问」的标准是**这条是否需要人拍板**，而不是「是否改变拆解结构」——凡涉及用户可感知行为、数据口径、跨端职责的问题都必须问，即使你已有明确的推荐答案。唯一例外：用户明确说「别问了，按推荐直接拆」。
 
@@ -356,7 +383,7 @@ Epic（本次需求的几个大块，通常 2~5 个）
 
 - **端归属**：前端 / 后端 / 联调。来自第 3 步的职责切分表，不要在这里临时改判
 - **涉及文件/模块**：具体路径，能到文件级别就到文件级别（`src/api/order.ts`、`internal/handler/order.go`）。**只需写清「要新建哪些文件」**；纯修改类文件可以不逐个登记——`git diff` 能反推，登记多了反而腐坏（OS-43617 的 44 条登记里 9 条过期）
-- **改动方式**：新增文件 / 修改现有函数 / 删除 / 重构。**「新增 vs 修改」必须以仓库现状为锚，不能凭 PRD 场景推导**——产出清单后逐个核对路径存在性：路径已存在的一律判「修改」，并把既有行为列入回归面（PRD 描述的结构性大改最容易把「改造存量组件」误判成「新写组件」，回归范围与工作量随之失真）。凭印象写「新增」而仓库里已有同名实现，同样是事故
+- **改动方式**：新增文件 / 修改现有函数 / 删除 / 重构。**「新增 vs 修改」必须以仓库现状为锚，不能凭 PRD 场景推导**——路径已存在的一律判「修改」，并把既有行为列入回归面（PRD 描述的结构性大改最容易把「改造存量组件」误判成「新写组件」，回归范围与工作量随之失真）。凭印象写「新增」而仓库里已有同名实现，同样是事故。逐个核对路径存在性交给机检：`python3 "$PTB" validate --jira <JIRA> --root <项目根>`（登记 `add` 但文件已存在、登记 `modify/delete` 但文件不存在都会报警告）
 - **接口契约**：新增或变更的 API——方法、路径、请求体、响应体、错误码
 - **数据结构**：新增或变更的表字段、类型定义、状态枚举
 - **复用点**：可以复用的现有函数、组件、工具类（写路径）
@@ -419,13 +446,7 @@ Epic（本次需求的几个大块，通常 2~5 个）
 
 台账与仓库不一致（文件已存在、验收未回写）`validate` **只报警告**；依赖缺失/成环、引用了不存在的需求、标了完成却没有完成记录仍是**错误**。
 
-```bash
-SKILL_DIR="$(cd "$(dirname "<本技能目录>/SKILL.md")" && pwd -P)"
-PLUGIN_ROOT="$(cd "$SKILL_DIR/../.." && pwd -P)"
-PTB="$PLUGIN_ROOT/scripts/ptb.py"
-```
-
-`<本技能目录>` = 本 SKILL.md 所在目录（若是指向插件源码的软链，`pwd -P` 会解析到真实路径）；`PLUGIN_ROOT` 即 `plugins/prd-workflow/`。长文本一律用 `--xxx-file /tmp/xxx.md` 传入——`/tmp` 只是传输载体，不是产物。
+`$PTB` / `$SCRIPTS` 已在文首「环境引导」定义。
 
 ### 建需求与设计稿登记
 
@@ -495,21 +516,29 @@ python3 "$PTB" i18n add --jira OS-43558 --key shop.report.consultCta --value '{"
 | 缺口问答 | `decision add` |
 | 多语言 | `i18n add` |
 
-**多语言任务的验收必须包含「词典已下发」**：翻译平台多为按 key 异步翻译，key 创建成功（`successCount>0`）只代表源语言可见。涉及词典 key 的任务，验收至少加一条「各目标语言词典查询返回非空」，并默认记一条风险「译文未下发前，关闭了 fallback 的端会直接渲染 key 原文」。写验收前先确认平台能力边界（能否按语言登记复数形态等），不要按理想能力写验收。
+**多语言任务的验收必须包含「词典已下发」**：翻译平台多为按 key 异步翻译，key 创建成功（`successCount>0`）只代表源语言可见。涉及词典 key 的任务，跑一条命令按固定模板补齐验收与风险：
+
+```bash
+bash "$SCRIPTS/i18n-guard.sh" --jira <JIRA> --task <T00X>
+# 补验收「各目标语言词典查询返回非空」+ 风险「译文未下发前，关闭了 fallback 的端会直接渲染 key 原文」
+```
+
+写验收前先确认平台能力边界（能否按语言登记复数形态等），不要按理想能力写验收。
 
 ### 校验
 
 ```bash
 python3 "$PTB" validate --jira OS-43558 --root <项目根>
+python3 "$SCRIPTS/selfcheck.py" --jira OS-43558
 ```
 
-**0 个错误才算产出完成**（错误只剩结构性问题：依赖缺失/成环、引用不存在的需求、标完成无记录、结构设计无依据或依据不可核验）。台账类警告（文件登记过期、验收未回写）按分档处理：轻量路径可直接忽略，完整台账逐条收尾或写进 `decision` 说明不处理理由。
+**两条都 0 个错误才算产出完成**。`validate` 查结构性问题（依赖缺失/成环、引用不存在的需求、标完成无记录、结构设计无依据或依据不可核验、台账路径存在性）；`selfcheck.py` 查自检清单的机检项（scope 已写、「前端不处理」边界、visual 任务有 design_ref、covers 引用、埋点 API 匹配、contract 验收标注、文件多卡登记）。台账类警告按分档处理：轻量路径可直接忽略，完整台账逐条收尾或写进 `decision` 说明不处理理由。
 
 ### 硬规则
 
 - 不生成任何 md（任务卡、总览表、i18n、索引都没有）；需求列表用 `python3 "$PTB" jira list`，任务总览用 `python3 "$PTB" jira show --jira X --md`；
 - 任务 ID 稳定（`T001`），后续对话只用 ID 指代；
-- 同一 Jira 重复拆解用同一套命令覆盖：`task add` 前先 `task list` 查重，已存在的用 `task set` / `task text` 更新，不要重复插入；
+- 同一 Jira 重复拆解用同一套命令覆盖：统一走 `bash "$SCRIPTS/task-save.sh" …`（参数与 `task add` 完全相同）——首次插入，任务已存在时自动转 `task set` + `task text` 更新并幂等补挂 `--dep` / `--req`，不会重复插入；
 - 本技能只创建 `todo` 状态的任务，`done` 由 task-runner 回写；
 - 验收标准必须可观测，不能写「功能正常」；
 - **验证脚本不写进业务仓库**：见下方「配套产物落位」。
@@ -544,38 +573,45 @@ const { chromium } = require('playwright');
 
 ## 8. 自检清单
 
-产出前逐条过：
+产出前先跑两条机检命令，**两条都 0 个错误**后再人工过判断项：
+
+```bash
+python3 "$PTB" validate --jira <JIRA> --root <项目根>
+python3 "$SCRIPTS/selfcheck.py" --jira <JIRA>
+```
+
+**机检已覆盖**（命令 0 错误即通过，括号内为对应命令）：
+
+- 第 0.5 步的范围已写入 `jiras.scope`（selfcheck）
+- 每条需求都写了「前端不处理」边界（excluded_frontend 非空）（selfcheck）
+- 含 visual 验收的任务都登记了 `design_ref`；`design_drafts.covers` 引用的任务存在（selfcheck）
+- 埋点 API 与事件类型匹配（曝光 `TrackBeseen` / 点击 `sendTrack`）且写清元素与时机（selfcheck）
+- `kind=contract` 的验收都带 `--contract` 标注，contract-align 才能回扫（selfcheck）
+- 同一文件的行只出现在创建它的任务上（selfcheck 警告）
+- 「新增/修改」判定已与仓库现状核对（路径存在性）、依赖无环、需求全覆盖、无验收任务可见（validate）
+- brief `## 结构设计` 五决策项齐全且依据可核验（validate）
+
+**人工判断项**（逐条过）：
 
 - [ ] **铁律已遵守：所有未确认问题都真的问出并等到明确回答；含糊答复已追问到清晰或标「待确认」；没有任何条目靠推荐值/自行推导静默落地**
-- [ ] **第 0.5 步的范围（前端/后端/都拆）已经问过用户，并写入 `jiras.scope`**
+- [ ] **第 0.5 步的范围（前端/后端/都拆）已经问过用户**（「写入 scope」由 selfcheck 把关）
 - [ ] **若只拆一端：另一端的依赖清单已填写，且标明了哪些接口/组件尚不存在**
 - [ ] **所有任务与排期的范围，与确认的拆解范围一致（没有偷偷产出另一端的任务）**
-- [ ] PRD 里每条需求（R1、R2……）都有任务覆盖（`validate` 报「未被任何任务覆盖」即为遗漏）
-- [ ] **每条需求都写了「前端不处理」边界（`excluded_frontend` 非空）**
 - [ ] **没有把权限判定、业务规则、金额计算、数据范围过滤放在前端任务里**
 - [ ] **前端任务里对业务约束的处理方式，是消费后端返回的标记/枚举，而不是自己判断**
-- [ ] **埋点都在 `tracking_points` 里定义一次：曝光用 `TrackBeseen`、点击用 `sendTrack`，且写清元素与触发时机**
-- [ ] **接口契约只在 `contracts` / `contract_fields` 里定义一次，任务只引用**
+- [ ] **接口契约只在 `contracts` / `contract_fields` 里定义一次，任务卡文字只引用不复制字段**
 - [ ] **接口契约类任务排在依赖它的前后端开发任务之前**
 - [ ] 没有超出 PRD 范围的「顺手做了」的任务混进来（或者被明确标记为「建议项」）
 - [ ] 每条任务都能被独立验证，验收标准可观测
-- [ ] **「新增/修改」判定已与仓库现状核对（`validate --root` 检查路径存在性）**
-- [ ] **含 UI 改动的任务都登记了 `design_ref`（设计稿路径 + 区块）**
-- [ ] **`design_drafts.covers` 已写清每份稿覆盖哪些任务，执行方可「一稿一轮」还原**
 - [ ] **与设计稿不一致的视觉裁决（如复用项目布局优先于稿）已写入 `jiras.baseline`，不靠口头传递**
-- [ ] **依赖后端能力才能验证的验收项已用 `--kind contract --contract` 标注**
-- [ ] 任务颗粒度合格：没有出现「实现 XX 模块」这种一周级别的巨无霸
-- [ ] **必需项齐全：需求覆盖、任务与依赖、decisions、risks、结构设计、每张卡的验收定义**；台账（file 清单 / 逐条 acc 结果）是否填写与需求分档一致
+- [ ] **UI 设计稿若为缩放舞台（`stage-check.sh` 判定），note 与 baseline 提示已随登记写入**
+- [ ] **必需项齐全：decisions、risks、每张卡的验收定义**；台账（file 清单 / 逐条 acc 结果）是否填写与需求分档一致
 - [ ] **要新建的文件都写明了路径**；纯修改类文件可以不逐个登记（`git diff` 可反推）
 - [ ] 数据变更类任务都考虑了历史数据迁移和回滚
 - [ ] 异常流程、边界条件、权限校验都拆出了对应任务
-- [ ] 依赖关系无环（`validate` 报成环即为错）
 - [ ] **第 2 步的模糊点已经全部真的问过用户并等到回答**（分批问完，没有「问一半、写一半」）；未答复项在 `decisions` 里保持可见
-- [ ] **口头口径与 PRD 冲突处均已 decision + risk 落库**，并已追问 wiki 是否同步
-- [ ] **UI 设计稿若为缩放舞台（固定宽度 + JS scale），已在 design note 与 baseline 标注**舞台宽与渲染比例
-- [ ] **同一文件的行只出现在创建它的任务上**，后续任务在 implementation 文字说明
-- [ ] **brief 有 `## 结构设计` 小节：五个决策项齐全，且每项依据列可核验（路径存在 / `symbol@file#Lx-Ly` 能在 codegraph 查到 / `rule:<规则名>@file#Lx-Ly` 能在 ast-grep 复跑命中 / 缺口已落 decision）**
-- [ ] **`ptb validate --jira <J> --root <项目根>` 0 个错误**
+- [ ] **口头口径与 PRD 冲突处均已 decision + risk 落库**（`verbal-change.sh`），并已追问 wiki 是否同步
+- [ ] 任务颗粒度合格：没有出现「实现 XX 模块」这种一周级别的巨无霸
 
 ---
 
